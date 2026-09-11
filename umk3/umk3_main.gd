@@ -15,7 +15,7 @@ const _Effects := preload("res://umk3/umk3_effects.gd")
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-11 18:40  speed on F10/F11"
+const BUILD := "2026-09-11 19:20  rate 6 inherited, hitbox on H"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -54,6 +54,8 @@ var _pose := -1
 ## umk3_stage.gd for why this is a choice between two approximations rather
 ## than a setting with a right answer.
 var _stage_light := true
+## H toggles the hitboxes; `--hitbox 1` starts with them on.
+var _hitbox := false
 
 
 func _ready() -> void:
@@ -106,6 +108,7 @@ func _ready() -> void:
 			"--wait":   _shot_at_want = int(args[i + 1])
 			"--stagelight": _stage_light = int(args[i + 1]) != 0
 			"--fog":    _Effects.opacity = float(args[i + 1])
+			"--hitbox": _hitbox = int(args[i + 1]) != 0
 			"--shot":
 				_shot = args[i + 1]
 				set_process(true)
@@ -207,6 +210,7 @@ func _ensure_fight() -> void:
 	_fight.visible = _fight_mode
 	if _drive >= 0:
 		_fight.forced[0] = _drive
+	_fight.show_hitbox = _hitbox
 	# `--pose N` freezes both fighters on one animation frame. The frame list
 	# names all 344 of Scorpion's, so this is how a clip range is checked
 	# against what it actually draws instead of against its name.
@@ -263,9 +267,10 @@ func _hud_text() -> String:
 	if _fight_mode and _fight != null:
 		return head \
 			+ "WASD move/jump/duck   U I O J K L  hi/lo punch, block, hi/lo kick, run\n" \
-			+ (("[ ] stage  V viewer  F5 reset  F6/F7 fog %.2f  F8/F9 rate %d"
-				+ "  F10/F11 speed %.1fx  ESC menu\n")
-				% [_Effects.opacity, _fight.anim_rate, _fight.game_speed]) \
+			+ (("[ ] stage  V viewer  F5 reset  F6/F7 fog %.2f  F8/F9 rate%+d"
+				+ "  F10/F11 speed %.1fx  H box %s  ESC menu\n")
+				% [_Effects.opacity, _fight.rate_bias, _fight.game_speed,
+					"on" if _fight.show_hitbox else "off"]) \
 			+ _fight.status()
 	return head + "[ ] stage   SPACE frame   V fight   ESC menu"
 
@@ -322,6 +327,12 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_F5:
 				if _fight:
 					_fight.reset()
+			# The hitboxes. A measured box and a chosen reach drawn side by
+			# side, which is the point of showing them at all.
+			KEY_H:
+				if _fight:
+					_fight.show_hitbox = not _fight.show_hitbox
+					_hitbox = _fight.show_hitbox
 			# The fog is a LOOK, and a look is dialled by eye rather than
 			# argued one screenshot at a time. These move it live, and the
 			# value is in the HUD so it can be reported back as a number.
@@ -334,10 +345,10 @@ func _unhandled_input(e: InputEvent) -> void:
 			# Lower is FASTER -- it is game frames held per animation frame.
 			KEY_F8:
 				if _fight:
-					_fight.anim_rate = maxi(1, _fight.anim_rate - 1)
+					_fight.rate_bias -= 1
 			KEY_F9:
 				if _fight:
-					_fight.anim_rate = mini(12, _fight.anim_rate + 1)
+					_fight.rate_bias += 1
 			# The whole game's speed. The engine ticks once per drawn frame and
 			# the rate it drew at is not recovered yet, so this is the one
 			# number here that is honestly still open.

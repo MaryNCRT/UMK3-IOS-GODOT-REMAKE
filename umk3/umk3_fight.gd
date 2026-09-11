@@ -39,9 +39,38 @@ const WALL_R := ROUNDPARAM_RIGHT - 399 + 0x15f         #  902
 ## mk3_update: G[0xac] = RoundParam[2] + 0xf7, every frame.
 const FLOOR_Y := ROUNDPARAM_GROUND + 0xf7              #  547
 
-## mk3_getbbox's hard-coded animation: 56 wide and 72 tall.
-const BOX_W := 56
-const BOX_H := 72
+## The hitbox.
+##
+## **`mk3_getbbox`'s 56 x 72 is not a fighter's box.** It is a wrapper around a
+## function pointer with ONE animation patched past it -- `if (ani == 0x12be)`
+## -- and those four numbers belong to that animation alone. The real boxes come
+## from the pointer, which `mk3_init` receives as an argument and
+## `GameInit_LoadABit` fills with `FrameID_GetBBox` (0x0001c674).
+##
+## That reads `_FrameInfo2` (0x00129f1c), sixteen bytes per GLOBAL frame id --
+## the same id space as the animation streams -- as
+##
+##     left, top, width, height      right = left + width, bottom = top + height
+##
+## and the table is **almost entirely zero in the binary**: 27 of 7,168 entries.
+## The rest is filled at run time. What ships is three nine-frame runs, and nine
+## frames is a stance:
+##
+##     Kabal            left -20  top 9   54 x 135
+##     Sub-Zero         left -18  top 8   56 x 128
+##     Kitana/Jade/Mileena  left -29  top 6   55 x 130
+##
+## **So a fighter's box is about 55 wide and 130 tall**, not 72 tall. Against
+## `_ochar_ground_offsets` -- Kabal 148, Sub-Zero 142, the kunoichi 139 -- the
+## box is 90 to 93 per cent of the character's height.
+##
+## Scorpion's own rows are zero, so this uses the kunoichi's: they are the same
+## 139 units tall and the same build. That is a stand-in, and a much closer one
+## than a number belonging to a single patched animation.
+const BOX_LEFT := -29
+const BOX_TOP := 6
+const BOX_W := 55
+const BOX_H := 130
 
 ## The ten input bits. **This is the whole input contract** -- proved three
 ## ways, in the block at the top of decomp/gamecode/logic/joy.c.
@@ -185,36 +214,33 @@ const MOVE_ANI := [
 	25,          # MV_FLIP_KICK   SCFLIPKICK   3
 ]
 
-## How many game frames one animation frame is held for, when the animation's
-## own rate has not been recovered.
+## The animation rates, and the rule that picks them.
 ##
-## **The walk's rate is measured and is 5** -- the other half of the walk table.
-## The basic punches and kicks set NO rate at all: `t_joy_hi_punch` writes
-## `field40 = 0xe`, calls `get_char_ani` and never touches `init_anirate`, so it
-## inherits whatever the last state left behind. Which state that was depends on
-## how the fighter got there, and following that is a larger job than this one.
+## **The engine does not give every animation a rate. It INHERITS.**
+## `init_anirate` loads `Pp->field1c` and `next_anirate` counts it down, and
+## only some states ever call `init_anirate`:
 ##
-## So this is a choice, and it is made from the distribution rather than by
-## taste. Of the 70 calls to `init_anirate` in the binary, 57 carry a small
-## literal immediately before:
+##     stance   6   `stance_setup` (0x000553c4): field40 = 0, get_char_ani,
+##                  field1c = 6, init_anirate -- the one that was hardest to
+##                  find, because nothing about a punch mentions it
+##     walk     5   the other half of the walk table, per character
+##     run      3   `run_setup` (0x00030fbc)
 ##
-##     rate 0   2 sites     rate 3  16 sites     rate 6   5 sites
-##     rate 1   4 sites     rate 4  17 sites     rate 8   1 site
-##     rate 2   8 sites     rate 5   3 sites     rate 15  1 site
+## A punch sets NO rate: `t_joy_hi_punch` writes `field40 = 0xe`, calls
+## `get_char_ani` and never touches `init_anirate`. It plays at whatever the
+## fighter was already on -- 6 standing, 5 walking. That is not a quirk to
+## correct, it is the behaviour, so this reproduces it: the attack states pass
+## the CURRENT rate rather than one of their own.
 ##
-## **3 and 4 are 33 of the 57. 5 is three of them.** The first version used 5,
-## the walk's, and the answer that came back was that the animations felt slow.
-## They were: sitting at the slow end of a distribution whose middle is 3 to 4.
-##
-## F8 and F9 move it live and the HUD shows it, so the number gets chosen by
-## playing rather than by argument.
-##
-## **An instance variable, not a `static var`.** It was static, and the shell
-## set it through its `preload`ed reference to this script -- which crashes:
-## assigning a static through a script Variant is not the same as assigning it
-## through the class name, and F8 took the game down with it. The fight is a
-## node the shell already holds, so there is no reason to reach around it.
-var anim_rate := 3
+## This replaces a number chosen from the distribution of `init_anirate`
+## literals across the whole binary. That distribution was a fair guess and it
+## was a guess; 6 and the inheritance are what the code does.
+const RATE_STANCE := 6
+const RATE_RUN := 3
+
+## Added to every rate, for dialling by eye. Zero is the engine. F8 and F9 move
+## it; the HUD shows the stance's effective rate.
+var rate_bias := 0
 
 # ================================================== the walk, measured
 #
@@ -328,7 +354,11 @@ class Fight extends RefCounted:
 		if id == ani:
 			return
 		ani = id
-		ani_rate = maxi(rate, 1)
+		# **-1 inherits.** A state that does not call `init_anirate` keeps the
+		# countdown it was given, which is how a punch ends up playing at the
+		# stance's 6 or the walk's 5 depending on how the fighter got there.
+		if rate > 0:
+			ani_rate = rate
 		ani_count = 1
 		ani_index = 0
 
@@ -374,6 +404,15 @@ var frozen := false
 ## without watching something move.
 var forced := [-1, -1]
 
+## Draw the hitboxes. H toggles it; `--hitbox 1` starts with it on.
+##
+## The body box is the engine's, from `_FrameInfo2` -- see BOX_W. The REACH bar
+## in front of an attacking fighter is not: `REACH_PUNCH` and `REACH_KICK` are
+## still chosen numbers, and drawing them next to a measured box is exactly how
+## the difference stays visible instead of blending in.
+var show_hitbox := false
+
+var _boxes: Array[MeshInstance3D] = []
 var _accum := 0.0
 var _cam: Camera3D = null
 var audio = null
@@ -512,8 +551,10 @@ func _pressed_button(f: Fight, raw: int) -> int:
 # ----------------------------------------------------------- the state machine
 func _move_frames(mv: int) -> int:
 	if mv <= MV_NONE or mv >= MOVE_ANI.size():
-		return anim_rate
-	return _ani_length(MOVE_ANI[mv], anim_rate)
+		return RATE_STANCE
+	# A move lasts its animation at whatever rate the fighter is carrying, which
+	# is the inheritance the engine relies on.
+	return _ani_length(MOVE_ANI[mv], maxi(1, RATE_STANCE + rate_bias))
 
 
 func _move_reach(mv: int) -> int:
@@ -683,7 +724,10 @@ func tick() -> void:
 	# so a held button does not restart the cycle every frame.
 	for f in fighters:
 		var pick := _ani_for(f)
-		f.set_ani(pick[0], pick[1])
+		var want: int = pick[1]
+		if want > 0:
+			want = maxi(1, want + rate_bias)
+		f.set_ani(pick[0], want)
 		var s := _stream(f.ani)
 		if s.is_empty():
 			continue
@@ -733,28 +777,28 @@ func tick() -> void:
 # -------------------------------------------------------------------- drawing
 ## Which of the engine's animations this fighter is showing, and at what rate.
 ##
-## The rate is measured for the walk and assumed for everything else; see
-## anim_rate.
+## **A rate of -1 means INHERIT**, which is what every state that does not call
+## `init_anirate` does. See RATE_STANCE.
 func _ani_for(f: Fight) -> Array:
 	match f.st:
 		St.ATTACK:
-			return [MOVE_ANI[f.move], anim_rate]
+			return [MOVE_ANI[f.move], -1]
 		St.HIT:
-			return [ANI_DUCK_HIT if f.table == BT_DUCK else ANI_HIT, anim_rate]
+			return [ANI_DUCK_HIT if f.table == BT_DUCK else ANI_HIT, -1]
 		St.BLOCK:
-			return [ANI_BLOCK, anim_rate]
+			return [ANI_BLOCK, -1]
 		St.DUCK:
-			return [ANI_DUCK, anim_rate]
+			return [ANI_DUCK, -1]
 		St.JUMP:
-			return [ANI_JUMPFLIP if f.table == BT_ANGLE_JUMP else ANI_JUMP,
-				anim_rate]
+			return [ANI_JUMPFLIP if f.table == BT_ANGLE_JUMP else ANI_JUMP, -1]
 		St.WALK_F:
 			return [ANI_WALK_F, WALK_FORWARD[CHARACTER][WALK_RATE]]
 		St.WALK_B:
 			return [ANI_WALK_B, WALK_BACKWARD[CHARACTER][WALK_RATE]]
 	if f.health == 0:
-		return [ANI_VICTORY, anim_rate]
-	return [ANI_STANCE, anim_rate]
+		return [ANI_VICTORY, -1]
+	# Standing is the one that sets it, and everything else lives off that.
+	return [ANI_STANCE, RATE_STANCE]
 
 
 ## One animation's [name, loops, frames], or an empty one.
@@ -863,6 +907,75 @@ func _process(dt: float) -> void:
 		_accum = 0.0
 	_place()
 	_frame_camera()
+	_draw_boxes()
+
+
+## The hitboxes, as wire boxes in the world.
+##
+## Rebuilt from the same numbers the hit test uses, every frame, rather than
+## from anything the renderer knows: a debug box drawn from a second source can
+## agree with the screen and disagree with the fight, which is the one thing it
+## must not do.
+func _draw_boxes() -> void:
+	if not show_hitbox:
+		for b in _boxes:
+			b.visible = false
+		return
+	while _boxes.size() < fighters.size() * 2:
+		var mi := MeshInstance3D.new()
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.vertex_color_use_as_albedo = true
+		mat.no_depth_test = true
+		mi.material_override = mat
+		add_child(mi)
+		_boxes.append(mi)
+
+	for i in fighters.size():
+		var f := fighters[i]
+		# The engine's y is the TOP of the box and grows DOWNWARD, so the box
+		# hangs from `y` toward the floor.
+		var x := float(f.xi() + BOX_LEFT) * scale_units
+		var top := float(FLOOR_Y - f.yi() - BOX_TOP) * scale_units
+		var bot := top - float(BOX_H) * scale_units
+		var w := float(BOX_W) * scale_units
+		_boxes[i * 2].mesh = _wire_box(x, bot, x + w, top,
+			Color(0.2, 1.0, 0.3) if f.st != St.HIT else Color(1.0, 0.3, 0.2))
+		_boxes[i * 2].visible = true
+
+		# The reach of an attack in flight, so a chosen number is visible as
+		# one. Nothing is drawn when the fighter is not attacking.
+		var r := _boxes[i * 2 + 1]
+		if f.st != St.ATTACK:
+			r.visible = false
+			continue
+		var reach := float(_move_reach(f.move)) * scale_units
+		var cx := float(f.xi()) * scale_units
+		var mid := top - float(BOX_H) * scale_units * 0.45
+		var x0: float = cx if f.facing > 0 else cx - reach
+		r.mesh = _wire_box(x0, mid - 4.0, x0 + reach, mid + 4.0,
+			Color(1.0, 0.9, 0.2))
+		r.visible = true
+
+
+## A rectangle in the XY plane, as lines.
+func _wire_box(x0: float, y0: float, x1: float, y1: float,
+			   col: Color) -> ArrayMesh:
+	var v := PackedVector3Array([
+		Vector3(x0, y0, 0), Vector3(x1, y0, 0),
+		Vector3(x1, y0, 0), Vector3(x1, y1, 0),
+		Vector3(x1, y1, 0), Vector3(x0, y1, 0),
+		Vector3(x0, y1, 0), Vector3(x0, y0, 0)])
+	var c := PackedColorArray()
+	c.resize(v.size())
+	c.fill(col)
+	var arrays := []
+	arrays.resize(ArrayMesh.ARRAY_MAX)
+	arrays[ArrayMesh.ARRAY_VERTEX] = v
+	arrays[ArrayMesh.ARRAY_COLOR] = c
+	var am := ArrayMesh.new()
+	am.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arrays)
+	return am
 
 
 ## One line per fighter, for the HUD.
