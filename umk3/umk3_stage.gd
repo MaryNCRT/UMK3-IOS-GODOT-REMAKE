@@ -25,13 +25,22 @@ extends Node3D
 
 const _MeshSet := preload("res://umk3/umk3_meshset.gd")
 const _Scene := preload("res://umk3/umk3_scene.gd")
+const _Textures := preload("res://umk3/umk3_textures.gd")
+const _Light := preload("res://umk3/umk3_light.gd")
 
 ## Set before `build` to see what was loaded.
 @export var verbose := true
 
 var meshset := _MeshSet.new()
 var scene_graph := _Scene.new()
+var textures = null
 var error := ""
+
+## Light the geometry with the engine's own model. See umk3_light.gd: this is
+## NOT what the game does for stages -- it bakes them into .lighting files and
+## that encoding is not decoded -- but the normals really are in the .meshset
+## and the light rig really is the game's.
+@export var use_lighting := true
 
 ## How far the stage reaches, in its own units. Worth having: Graveyard's moon
 ## sits about 27,500 units out, and a camera far plane sized to a fighter
@@ -43,6 +52,9 @@ func build(res_dir: String, stem: String, frame: int = 0) -> bool:
 	error = ""
 	for c in get_children():
 		c.queue_free()
+
+	if textures == null:
+		textures = _Textures.new(res_dir)
 
 	var ms_path := res_dir.path_join(stem + ".meshset")
 	var sc_path := res_dir.path_join(stem + ".scene")
@@ -107,6 +119,7 @@ func build(res_dir: String, stem: String, frame: int = 0) -> bool:
 		print("[umk3] %s: variant %s, %d meshes, %d tris, %d placed, reach %.0f"
 			% [stem, meshset.variant, meshset.meshes.size(),
 			   meshset.total_triangles(), placed, reach])
+		print("[umk3] " + textures.report())
 	return true
 
 
@@ -119,6 +132,13 @@ func _make_instance(m) -> MeshInstance3D:
 	arrays[ArrayMesh.ARRAY_VERTEX] = m.positions
 	arrays[ArrayMesh.ARRAY_TEX_UV] = m.uvs
 
+	# The engine's lighting is a MONOCHROME grey written as R = G = B, applied
+	# as a multiplier over the texture. Handing it to Godot as vertex colour
+	# and telling the material to use it reproduces that exactly.
+	if use_lighting and m.normals.size() == m.positions.size() \
+			and m.normals.size() > 0:
+		arrays[ArrayMesh.ARRAY_COLOR] = _Light.colours(m.normals)
+
 	if m.indices.size() > 0:
 		arrays[ArrayMesh.ARRAY_INDEX] = m.indices
 	elif m.positions.size() % 3 != 0:
@@ -129,12 +149,24 @@ func _make_instance(m) -> MeshInstance3D:
 
 	var mat := StandardMaterial3D.new()
 	# **Unshaded, and that is not laziness.** The original computes lighting
-	# per vertex on the CPU and hands it to GL as vertex colour, then calls
-	# glShadeModel(GL_FLAT) so it is not interpolated. Letting Godot light
-	# these would look better than the game and be wrong. The .lighting files
-	# carry the real per-vertex values and are not read yet.
+	# per vertex on the CPU and hands it to GL as vertex colour; letting Godot
+	# light these as well would double it and look nothing like the game.
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.vertex_color_use_as_albedo = true
+
+	var tex: ImageTexture = textures.get_texture(m.texture)
+	if tex:
+		mat.albedo_texture = tex
+		# The atlases wrap, and several stages rely on it -- the cobbles tile.
+		mat.texture_repeat = true
+		# 320 of the 1,400 textures carry alpha. Alpha-scissor rather than
+		# blending: the engine draws these opaque with an alpha TEST, and
+		# blending them would sort wrong and haloes the edges.
+		if tex.get_image() and tex.get_image().detect_alpha() != Image.ALPHA_NONE:
+			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+			mat.alpha_scissor_threshold = 0.5
+
 	am.surface_set_material(0, mat)
 
 	var mi := MeshInstance3D.new()

@@ -47,6 +47,13 @@ class MeshRecord extends RefCounted:
 	var indices: PackedInt32Array      ## num_faces * 3, empty for variant C
 	var positions: PackedVector3Array
 	var uvs: PackedVector2Array
+	## **Variant A only, and the engine throws them away.** The 26-byte vertex
+	## ends with three floats the iOS loader skips -- it advances 26 in the
+	## source and 16 in the destination, copying only the first 14 bytes. They
+	## are the vertex normal, and they are read here because the engine's own
+	## lighting model needs them and the baked `.lighting` files are not
+	## decoded. Empty for variants B and C, whose 20-byte vertex has no room.
+	var normals: PackedVector3Array
 
 
 var meshes: Array[MeshRecord] = []
@@ -114,6 +121,8 @@ func _parse_as(b: PackedByteArray, v: String, out: Array[MeshRecord]) -> int:
 
 		m.positions.resize(vcount)
 		m.uvs.resize(vcount)
+		if v == "A":
+			m.normals.resize(vcount)
 		for k in vcount:
 			var p := off + k * vsize
 			if v == "A":
@@ -125,6 +134,10 @@ func _parse_as(b: PackedByteArray, v: String, out: Array[MeshRecord]) -> int:
 					float(b.decode_s16(p + 2)) / 32767.0,
 					float(b.decode_s16(p + 4)) / 32767.0)
 				m.uvs[k] = Vector2(b.decode_float(p + 6), b.decode_float(p + 10))
+				m.normals[k] = Vector3(
+					b.decode_float(p + 14),
+					b.decode_float(p + 18),
+					b.decode_float(p + 22))
 			else:
 				m.positions[k] = Vector3(
 					b.decode_float(p),

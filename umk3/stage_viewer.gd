@@ -10,7 +10,8 @@
 ##   SPACE               next scene-graph frame (some stages animate placement)
 extends Node3D
 
-const UMK3Stage := preload("res://umk3/umk3_stage.gd")
+const _Stage := preload("res://umk3/umk3_stage.gd")
+const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 
 const STAGES := [
 	"GRAVEYARD_LEVEL_SCENE", "BALCONY_LEVEL_SCENE", "BELLTOWER_LEVEL_SCENE",
@@ -21,7 +22,7 @@ const STAGES := [
 
 @export_dir var res_dir := ""
 
-var _stage: UMK3Stage
+var _stage
 var _index := 0
 var _frame := 0
 var _cam: Camera3D
@@ -32,13 +33,13 @@ var _label: Label
 
 
 func _ready() -> void:
-	for a in OS.get_cmdline_user_args():
-		if a != "":
-			res_dir = a
-			break
+	res_dir = UMK3Paths.resolve(res_dir)
 	if res_dir == "":
-		push_error("set res_dir to your extracted UMK3.app/res")
+		push_error("Set res_dir on the StageViewer node, or pass the path "
+			+ "after -- on the command line. It is your own extracted "
+			+ "UMK3.app/res; no game data ships with this project.")
 		return
+	print("[umk3] res: " + res_dir)
 
 	_cam = Camera3D.new()
 	_cam.far = 60000.0          # Graveyard's moon is ~27,500 units out
@@ -61,7 +62,7 @@ func _load(i: int) -> void:
 	_frame = 0
 	if _stage:
 		_stage.queue_free()
-	_stage = UMK3Stage.new()
+	_stage = _Stage.new()
 	add_child(_stage)
 	if not _stage.build(res_dir, STAGES[_index], _frame):
 		_label.text = "FAILED: " + _stage.error
@@ -77,11 +78,20 @@ func _update_label() -> void:
 
 
 func _update_cam() -> void:
+	# Input arrives even when _ready bailed out for a missing res folder, and
+	# a null camera then crashes on every keypress -- which buries the actual
+	# error under a stack trace. Guard rather than assume _ready succeeded.
+	if _cam == null:
+		return
 	var b := Basis.from_euler(Vector3(_pitch, _yaw, 0.0))
 	_cam.transform = Transform3D(b, b * Vector3(0, 0, _dist))
 
 
 func _unhandled_input(e: InputEvent) -> void:
+	if _cam == null:
+		if e is InputEventKey and e.pressed and e.keycode == KEY_ESCAPE:
+			get_tree().quit()
+		return
 	if e is InputEventMouseMotion and (e.button_mask & MOUSE_BUTTON_MASK_LEFT):
 		_yaw -= e.relative.x * 0.006
 		_pitch = clampf(_pitch - e.relative.y * 0.006, -1.4, 1.4)

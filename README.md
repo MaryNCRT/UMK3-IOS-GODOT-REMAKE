@@ -50,11 +50,46 @@ Headless check, which parses every stage and reports:
 ## Status
 
     11 of 11 stages parse, 0 failures.
-    Geometry and placement: done.
-    Textures: not yet — they are PVRTC in a container this does not read.
-    Lighting: not yet — the .lighting files carry per-vertex colour.
+    Geometry and placement  done
+    Textures                done — PVRTC 2bpp and 4bpp, and PNG
+    Lighting                the engine's model, standing in (see below)
 
-Materials are deliberately **unshaded**. The original computes lighting
-per vertex on the CPU and calls `glShadeModel(GL_FLAT)` so it is not
-interpolated; letting Godot light these would look better than the game
-and be wrong.
+### Textures
+
+Legacy **PVR v2** containers, PVRTC1 at 2 or 4 bits per pixel. Decoding is
+per-pixel and GDScript is slow at it, so each decode is cached as PNG in
+`user://umk3_texcache` — Graveyard's first run is about 9 seconds and every
+run after it is 3. The key carries the source file's size and modification
+time, so pointing at a different `res` folder invalidates it.
+
+221 of the game's textures are PNG rather than PVRTC and cost nothing;
+Godot reads them directly.
+
+### Lighting — read this before trusting it
+
+**The original does not light stages this way.** Stages have baked
+per-vertex light in `.lighting` files — 341 of them ship — and *that
+encoding is not decoded*. The bytes are 62% zeros with all 256 values
+present, which looks like delta coding or compression, and saying more
+would be guessing.
+
+What is here instead is `LightVert`, the engine's own model, ported
+exactly: two directional lights, **no ambient**, a `pow()` falloff on
+each, clamped to 1, and the result written as a monochrome grey
+multiplier that can never tint. It is applied to vertex normals that
+really are in the `.meshset` and that the iOS loader discards.
+
+So: the game's own light rig, on the game's own normals, but not what
+the game displays. `umk3_light.gd` says the same thing at the top.
+
+One number in there is not the engine's: `fill`. A verified zero ambient
+and one active light leaves pitch-black backs, which makes a viewer
+useless. It is labelled as a viewer affordance in both this project and
+the C one.
+
+## Where the path is remembered
+
+The first working `res` folder is saved to `user://umk3.cfg` and reused,
+so the editor's Play button and the Godot MCP server work without
+arguments. `user://` is outside the project — nothing about your install
+lands in the repository.
