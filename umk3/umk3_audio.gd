@@ -87,6 +87,21 @@ func _load(name: String) -> void:
 	if _snd.has(name):
 		return
 	var path := res_dir.path_join("audio").path_join(name + ".wav")
+
+	# **When the data is bundled, Godot has already imported it.** A `.wav`
+	# inside the project is converted at import time and the original bytes are
+	# NOT exported, so the reader below finds nothing in a packaged build --
+	# which is exactly how this shipped silent once. The imported resource is
+	# there and is the same sound, so use it.
+	if ResourceLoader.exists(path):
+		var res := load(path)
+		if res is AudioStreamWAV:
+			_snd[name] = res
+			loaded += 1
+			if rate == 0:
+				rate = res.mix_rate
+			return
+
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
 		missing += 1
@@ -200,13 +215,19 @@ func music(stem: String) -> void:
 	if stem == "" or stem == _music_stem:
 		return
 	var path := res_dir.path_join("audio").path_join(stem + ".mp3")
-	if not FileAccess.file_exists(path):
-		print("[umk3] no music at " + path)
-		return
-	var f := FileAccess.open(path, FileAccess.READ)
-	var s := AudioStreamMP3.new()
-	s.data = f.get_buffer(f.get_length())
-	f.close()
+	var s: AudioStream = null
+	# Same as the sounds: a bundled mp3 is an imported resource, not a file.
+	if ResourceLoader.exists(path):
+		s = load(path)
+	if s == null:
+		if not FileAccess.file_exists(path):
+			print("[umk3] no music at " + path)
+			return
+		var f := FileAccess.open(path, FileAccess.READ)
+		var mp3 := AudioStreamMP3.new()
+		mp3.data = f.get_buffer(f.get_length())
+		f.close()
+		s = mp3
 	# `loop` on the stream would be the obvious thing, but a game track that
 	# was authored with an intro does not loop cleanly from zero; restarting on
 	# `finished` is what the C build's platform layer does too.

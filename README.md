@@ -26,10 +26,23 @@ destroys the only property that makes the transcription worth anything.
 So what crosses over is the part with no fidelity constraint: **the
 knowledge of how the files are laid out.**
 
-## NO GAME DATA IS INCLUDED
+## NO GAME DATA IS IN THE REPOSITORY
 
-Nothing from the game ships here. Every path is supplied at run time and
-points at your own extracted `UMK3.app/res`.
+Nothing from the game is committed. `.gitignore` excludes `assets/`, and the
+repository is code only.
+
+**A working copy is a different thing.** `umk3/umk3_bundle.gd` copies the files
+this build actually uses -- 187 of them, followed from the stages' own
+references rather than copied wholesale -- into `res://assets/game/`, and the
+project then runs on its own with no install path between it and the data:
+
+    godot --headless --path . --script umk3/umk3_bundle.gd -- "X:/UMK3.app/res"
+
+Run it again with extra names to bring one more thing over as it is needed;
+it only copies what is missing. A build exported after that **carries EA's
+data inside it and is a personal build** -- do not pass it on. Delete
+`assets/game` and export again for one that asks for your own `res` folder
+instead, which is how it worked before.
 
 ## Running
 

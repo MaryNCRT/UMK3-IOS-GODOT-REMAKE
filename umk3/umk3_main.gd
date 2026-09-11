@@ -15,7 +15,7 @@ const _Effects := preload("res://umk3/umk3_effects.gd")
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-11 16:20  walk delta measured"
+const BUILD := "2026-09-11 16:45  self-contained"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -73,6 +73,11 @@ func _ready() -> void:
 		l.add_theme_font_size_override("font_size", 20)
 		add_child(l)
 		return
+
+	# Which copy of the data this run is using. Worth printing: a build that
+	# carries its own and a build reading someone's install look identical
+	# until something is missing from one of them.
+	print("[umk3] data: " + res)
 
 	_world = Node3D.new()
 	add_child(_world)
