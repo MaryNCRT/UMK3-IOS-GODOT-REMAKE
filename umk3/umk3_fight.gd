@@ -21,6 +21,7 @@
 extends Node3D
 
 const _Fighter := preload("res://umk3/umk3_fighter.gd")
+const _Ani := preload("res://umk3/umk3_scorpion_ani.gd")
 
 # ============================================================ measured data
 #
@@ -90,11 +91,8 @@ const JUMP_VY := int(-10.0 * ONE)       ## one negative vy ...
 const GRAVITY := int(0.40 * ONE)        ## ... against one positive g
 const JUMP_VX := int(6.0 * ONE)         ## an angled jump's horizontal speed
 
-## **How long a move lasts is the CLIP's length**, not a number picked here:
-## the frame list says SCHIPUNCH is seven frames. What is chosen is only the
-## tempo -- how many 60 Hz frames one animation frame is held for. Two is 30 Hz.
-const ANIM_HOLD := 2
-const IDLE_HZ := 12.0
+## **How long a move lasts is its animation's length**, and now that is the
+## engine's own stream rather than a range read off the frame list.
 const T_HIT := 16
 const REACH_PUNCH := 70
 const REACH_KICK := 86
@@ -107,43 +105,61 @@ const START_GAP := 55
 const TICK_HZ := 60.0
 const MAX_CATCHUP := 4
 
-# ==================================================== Scorpion's clips
+# ============================== Scorpion's animations, by their engine id
 #
-# Every one is a real clip name and a real frame range out of
-# `res/framelists/scorpionframes.txt`. A `.skinanim` is one long stream holding
-# every animation the character has, so a range only means something because
-# the frame list names each frame.
+# Every clip is now the engine's OWN stream out of `_nj_ani_data` -- see
+# umk3_scorpion_ani.gd, which is generated from the binary rather than read off
+# the frame list by eye. What is left here is only WHICH animation each state
+# plays, and those are named by their contents.
+#
+# The hand-read ranges this replaces were wrong in ways that showed: a high
+# punch played seven frames when the animation has three, and a hit reaction
+# played 71, 72, 73 when the engine plays 72, 73, 72, 71 and comes back.
 
-const CL_STANCE := [216, 224]
-const CL_WALK := [282, 290]
-const CL_DUCK := [20, 22]
-const CL_BLOCK := [1, 3]
-const CL_JUMP := [94, 96]
-const CL_JUMPFLIP := [97, 104]
-const CL_HIT := [71, 73]
-const CL_DUCKHIT := [30, 32]
-const CL_VICTORY := [276, 281]
+const ANI_STANCE := 0
+const ANI_WALK_F := 1
+const ANI_WALK_B := 2
+const ANI_TURN := 3
+const ANI_DUCK := 4
+const ANI_DUCK_HIT := 7
+const ANI_BLOCK := 12
+const ANI_VICTORY := 13
+const ANI_JUMP := 22
+const ANI_JUMPFLIP := 26
+const ANI_HIT := 28
+const ANI_RUN := 70
 
-const CL_MOVE := [
-	[0, 0],          # MV_NONE
-	[80, 86],        # SCHIPUNCH
-	[136, 141],      # SCLOPUNCH
-	[1, 3],          # SCBLOCK
-	[74, 79],        # SCHIKICK
-	[130, 135],      # SCLOKICK
-	[271, 275],      # SCUPPERCUT
-	[36, 38],        # SCDUCKPUNCH
-	[23, 25],        # SCDUCKBLOCK
-	[26, 29],        # SCDUCKHIKICK
-	[33, 35],        # SCDUCKLOKICK
-	# There is no SCJUMPPUNCH in the frame list. The flip punch is the one
-	# airborne punch Scorpion has and stands in for both -- a substitution, and
-	# said out loud rather than hidden.
-	[62, 64],        # SCFLIPUNCH   as jump punch
-	[105, 107],      # SCJUMPKICK
-	[62, 64],        # SCFLIPUNCH
-	[54, 56],        # SCFLIPKICK
+## MV_* -> animation id. There is no SCJUMPPUNCH: the flip punch is the one
+## airborne punch Scorpion has and stands in for both, which is a substitution
+## and is said out loud rather than hidden.
+const MOVE_ANI := [
+	-1,          # MV_NONE
+	14,          # MV_HI_PUNCH    SCHIPUNCH    3 frames
+	15,          # MV_LO_PUNCH    SCLOPUNCH    3
+	12,          # MV_BLOCK       SCBLOCK      3
+	17,          # MV_HI_KICK     SCHIKICK     6
+	18,          # MV_LO_KICK     SCLOKICK     6
+	11,          # MV_UPPERCUT    SCUPPERCUT   5
+	8,           # MV_DUCK_PUNCH  SCDUCKPUNCH  3
+	6,           # MV_DUCK_BLOCK  SCDUCKBLOCK  3
+	9,           # MV_DUCK_KICKH  SCDUCKHIKICK 4
+	10,          # MV_DUCK_KICKL  SCDUCKLOKICK 3
+	24,          # MV_JUMP_PUNCH  SCFLIPUNCH   3
+	23,          # MV_JUMP_KICK   SCJUMPKICK   3
+	24,          # MV_FLIP_PUNCH  SCFLIPUNCH   3
+	25,          # MV_FLIP_KICK   SCFLIPKICK   3
 ]
+
+## How many game frames one animation frame is held for, when the animation's
+## own rate has not been recovered.
+##
+## **The walk's rate is measured** -- it is the other half of the walk table,
+## and it is 5. Every other state sets its own literal before `init_anirate`
+## (`run_setup` uses 3, `t_r_rabbit` uses 4), and those live in the per-move
+## states, which are not decompiled. So one assumption covers all of them and it
+## is the one number here that IS from the game, rather than a second invention
+## next to it.
+const ANIM_RATE := 5
 
 # ================================================== the walk, measured
 #
@@ -220,30 +236,41 @@ class Fight extends RefCounted:
 	var wins := 0
 	var prev_buttons := 0
 	var table: Array = BT_STANCE
-	## The engine's animation clock, from `init_anirate` and `next_anirate`.
+	## The engine's animation clock, from `init_anirate` and `next_anirate`:
 	## `ani_rate` game frames per animation frame, counted down in `ani_count`.
+	var ani := -1                ## which animation, by its engine id
 	var ani_rate := 5
 	var ani_count := 1
 	var ani_index := 0
-	var anim_last := -1
 	var node = null
 
 	## init_anirate: the rate is loaded and the countdown starts at ONE, so the
-	## first advance happens on the very next frame rather than `rate` frames
-	## later.
-	func start_walk(rate: int) -> void:
+	## first advance lands on the very next frame rather than `rate` frames
+	## later. Starting the same animation again is a no-op, which is what keeps
+	## a held button from restarting the walk cycle every frame.
+	func set_ani(id: int, rate: int) -> void:
+		if id == ani:
+			return
+		ani = id
 		ani_rate = maxi(rate, 1)
 		ani_count = 1
 		ani_index = 0
 
 	## next_anirate: decrement, and on reaching zero reload and step the frame.
-	## Returns true on the frames the animation actually advanced.
-	func tick_anirate(span: int) -> bool:
+	##
+	## A looping animation wraps -- opcode 1 in the stream is a jump back to its
+	## own start. A one-shot HOLDS its last frame: the stream ends there and the
+	## state, not the animation, decides when to leave. That hold is the whole
+	## of what stops a punch snapping back mid-swing.
+	func tick_ani(count: int, loops: bool) -> bool:
 		ani_count -= 1
 		if ani_count > 0:
 			return false
 		ani_count = ani_rate
-		ani_index = (ani_index + 1) % maxi(span, 1)
+		if ani_index + 1 < count:
+			ani_index += 1
+		elif loops:
+			ani_index = 0
 		return true
 
 	func xi() -> int:
@@ -294,12 +321,12 @@ func setup(res_dir: String, textures, cam: Camera3D, stem := "SCORPION_STANDARD"
 		f.node = n
 		fighters.append(f)
 
-	# The stance and the walk are every round's first two seconds.
+	# The stance and the walk are every round's first two seconds. Taken from
+	# the animations themselves, so the warm-up cannot drift from what plays.
 	var warm := []
-	for k in range(CL_STANCE[0], CL_STANCE[1] + 1):
-		warm.append(k)
-	for k in range(CL_WALK[0], CL_WALK[1] + 1):
-		warm.append(k)
+	for id in [ANI_STANCE, ANI_WALK_F, ANI_WALK_B]:
+		for k in (_stream(id)[2] as Array):
+			warm.append(k)
 	fighters[0].node.prewarm(warm)
 
 	# **The scale is derived from the character, not picked.** The engine says
@@ -338,10 +365,10 @@ func reset() -> void:
 		f.connected = false
 		f.prev_buttons = 0
 		f.table = BT_STANCE
+		f.ani = -1
 		f.ani_rate = WALK_FORWARD[CHARACTER][WALK_RATE]
 		f.ani_count = 1
 		f.ani_index = 0
-		f.anim_last = -1
 	frame = 0
 
 
@@ -408,10 +435,9 @@ func _pressed_button(f: Fight, raw: int) -> int:
 
 # ----------------------------------------------------------- the state machine
 func _move_frames(mv: int) -> int:
-	if mv <= MV_NONE or mv >= CL_MOVE.size():
-		return ANIM_HOLD
-	var c: Array = CL_MOVE[mv]
-	return (c[1] - c[0] + 1) * ANIM_HOLD
+	if mv <= MV_NONE or mv >= MOVE_ANI.size():
+		return ANIM_RATE
+	return _ani_length(MOVE_ANI[mv], ANIM_RATE)
 
 
 func _move_reach(mv: int) -> int:
@@ -502,14 +528,10 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		f.table = BT_ANGLE_JUMP if (raw & (dir_f | dir_b)) else BT_JUMP
 		return
 	elif raw & dir_f:
-		if f.st != St.WALK_F:
-			f.start_walk(WALK_FORWARD[CHARACTER][WALK_RATE])
 		f.st = St.WALK_F
 		f.table = BT_STANCE
 		vx = WALK_FORWARD[CHARACTER][WALK_SPEED] * f.facing
 	elif raw & dir_b:
-		if f.st != St.WALK_B:
-			f.start_walk(WALK_BACKWARD[CHARACTER][WALK_RATE])
 		f.st = St.WALK_B
 		f.table = BT_STANCE
 		vx = -WALK_BACKWARD[CHARACTER][WALK_SPEED] * f.facing
@@ -579,20 +601,26 @@ func tick() -> void:
 	for i in 2:
 		_think(fighters[i], fighters[1 - i], raw[i])
 
-	# The animation clock runs on the GAME's tick, not on the renderer's. The
-	# walk cycle is the only clip driven this way so far, because it is the only
-	# one whose rate the walk table gives.
+	# **The animation clock runs on the GAME's tick**, not on the renderer's,
+	# and it runs for every state rather than only the walk. Which animation is
+	# playing follows the state; starting the one already playing is a no-op,
+	# so a held button does not restart the cycle every frame.
 	for f in fighters:
-		if f.st == St.WALK_F or f.st == St.WALK_B:
-			var span := CL_WALK[1] - CL_WALK[0] + 1
-			if f.tick_anirate(span) and audio:
-				# Two footfalls in the cycle. WHICH frames they land on is a
-				# choice: the clip names them SCWALK1..9 and nothing marks
-				# contact.
-				@warning_ignore("integer_division")
-				var half := span / 2
-				if f.ani_index == 0 or f.ani_index == half:
-					audio.step()
+		var pick := _ani_for(f)
+		f.set_ani(pick[0], pick[1])
+		var s := _stream(f.ani)
+		if s.is_empty():
+			continue
+		var n: int = (s[2] as Array).size()
+		if not f.tick_ani(n, s[1]):
+			continue
+		if audio and (f.st == St.WALK_F or f.st == St.WALK_B):
+			# Two footfalls in the cycle. WHICH frames they land on is a choice:
+			# the clip names them SCWALK1..9 and nothing marks contact.
+			@warning_ignore("integer_division")
+			var half := n / 2
+			if f.ani_index == 0 or f.ani_index == half:
+				audio.step()
 	_resolve_hits(fighters[0], fighters[1])
 	_resolve_hits(fighters[1], fighters[0])
 
@@ -627,62 +655,62 @@ func tick() -> void:
 
 
 # -------------------------------------------------------------------- drawing
-func _clip_for(f: Fight) -> Array:
+## Which of the engine's animations this fighter is showing, and at what rate.
+##
+## The rate is measured for the walk and assumed for everything else; see
+## ANIM_RATE.
+func _ani_for(f: Fight) -> Array:
 	match f.st:
 		St.ATTACK:
-			return [CL_MOVE[f.move], false]
+			return [MOVE_ANI[f.move], ANIM_RATE]
 		St.HIT:
-			return [CL_DUCKHIT if f.table == BT_DUCK else CL_HIT, false]
+			return [ANI_DUCK_HIT if f.table == BT_DUCK else ANI_HIT, ANIM_RATE]
 		St.BLOCK:
-			return [CL_BLOCK, false]
+			return [ANI_BLOCK, ANIM_RATE]
 		St.DUCK:
-			return [CL_DUCK, false]
+			return [ANI_DUCK, ANIM_RATE]
 		St.JUMP:
-			return [CL_JUMPFLIP if f.table == BT_ANGLE_JUMP else CL_JUMP, false]
-		St.WALK_F, St.WALK_B:
-			return [CL_WALK, true]        # driven by distance, not by a clock
+			return [ANI_JUMPFLIP if f.table == BT_ANGLE_JUMP else ANI_JUMP,
+				ANIM_RATE]
+		St.WALK_F:
+			return [ANI_WALK_F, WALK_FORWARD[CHARACTER][WALK_RATE]]
+		St.WALK_B:
+			return [ANI_WALK_B, WALK_BACKWARD[CHARACTER][WALK_RATE]]
 	if f.health == 0:
-		return [CL_VICTORY, false]
-	return [CL_STANCE, true]
+		return [ANI_VICTORY, ANIM_RATE]
+	return [ANI_STANCE, ANIM_RATE]
+
+
+## One animation's [name, loops, frames], or an empty one.
+static func _stream(id: int) -> Array:
+	if id < 0 or id >= _Ani.ANI.size():
+		return []
+	return _Ani.ANI[id]
+
+
+## How many game frames an animation takes end to end. **This is what a move
+## lasts**: its own length, so nothing is ever cut off part way.
+func _ani_length(id: int, rate: int) -> int:
+	var s := _stream(id)
+	if s.is_empty():
+		return rate
+	return (s[2] as Array).size() * rate
 
 
 func _pose(f: Fight) -> void:
-	var r := _clip_for(f)
-	var c: Array = r[0]
-	var loop: bool = r[1]
-	var from: int = c[0]
-	var to: int = c[1]
-	var span: int = maxi(to - from + 1, 1)
-
-	if f.st == St.WALK_F or f.st == St.WALK_B:
-		# **The walk runs on the engine's own clock**, one animation frame every
-		# `ani_rate` game frames -- five for everyone but Motaro and Shao Kahn.
-		# That number and the speed come out of the same eight bytes of the walk
-		# table, which is why the feet keep up with the ground without anything
-		# here having to arrange it.
-		#
-		# This used to advance with DISTANCE instead, to stop the feet skating
-		# at a speed that was itself invented. With the real speed and the real
-		# rate there is nothing to compensate for.
-		var idx: int = f.ani_index
-		var frac := 1.0 - float(f.ani_count) / float(maxi(f.ani_rate, 1))
-		f.node.set_pose(from + idx, from + ((idx + 1) % span), frac)
+	var s := _stream(f.ani)
+	if s.is_empty():
 		return
-
-	if loop:
-		var pos := _now * IDLE_HZ
-		var fa := from + int(fmod(pos, float(span)))
-		var fb := from + int(fmod(pos + 1.0, float(span)))
-		f.node.set_pose(fa, fb, float(pos - floorf(pos)))
-		return
-
-	# A one-shot clip plays across the state's own timer, so a punch that lasts
-	# fourteen frames shows its whole animation in fourteen.
-	var total := f.timer_total if f.timer_total > 0 else 1
-	var done := maxi(total - f.timer, 0)
-	var p := minf(float(done) * float(span) / float(total), float(span - 1))
-	var a := from + int(p)
-	f.node.set_pose(a, mini(a + 1, to), p - floorf(p))
+	var frames: Array = s[2]
+	var n := frames.size()
+	var idx: int = clampi(f.ani_index, 0, n - 1)
+	var nxt: int = idx + 1
+	if nxt >= n:
+		# A one-shot holds its last frame; a loop goes round. Interpolating a
+		# held frame against itself is what keeps it still rather than drifting.
+		nxt = 0 if s[1] else idx
+	var frac := 1.0 - float(f.ani_count) / float(maxi(f.ani_rate, 1))
+	f.node.set_pose(frames[idx], frames[nxt], frac)
 
 
 func _scene_x(f: Fight) -> float:
