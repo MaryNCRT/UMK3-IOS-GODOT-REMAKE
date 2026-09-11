@@ -15,7 +15,7 @@ const _Effects := preload("res://umk3/umk3_effects.gd")
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-11 18:10  rate 3, gravity 0.5, scale 1:1"
+const BUILD := "2026-09-11 18:40  speed on F10/F11"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -263,8 +263,9 @@ func _hud_text() -> String:
 	if _fight_mode and _fight != null:
 		return head \
 			+ "WASD move/jump/duck   U I O J K L  hi/lo punch, block, hi/lo kick, run\n" \
-			+ ("[ ] stage  V viewer  F5 reset  F6/F7 fog %.2f  F8/F9 rate %d"
-				+ "  ESC menu\n") % [_Effects.opacity, _Fight.ANIM_RATE] \
+			+ (("[ ] stage  V viewer  F5 reset  F6/F7 fog %.2f  F8/F9 rate %d"
+				+ "  F10/F11 speed %.1fx  ESC menu\n")
+				% [_Effects.opacity, _fight.anim_rate, _fight.game_speed]) \
 			+ _fight.status()
 	return head + "[ ] stage   SPACE frame   V fight   ESC menu"
 
@@ -332,9 +333,20 @@ func _unhandled_input(e: InputEvent) -> void:
 			# recovered. Same reason as the fog: a feel is dialled, not argued.
 			# Lower is FASTER -- it is game frames held per animation frame.
 			KEY_F8:
-				_Fight.ANIM_RATE = maxi(1, _Fight.ANIM_RATE - 1)
+				if _fight:
+					_fight.anim_rate = maxi(1, _fight.anim_rate - 1)
 			KEY_F9:
-				_Fight.ANIM_RATE = mini(12, _Fight.ANIM_RATE + 1)
+				if _fight:
+					_fight.anim_rate = mini(12, _fight.anim_rate + 1)
+			# The whole game's speed. The engine ticks once per drawn frame and
+			# the rate it drew at is not recovered yet, so this is the one
+			# number here that is honestly still open.
+			KEY_F10:
+				if _fight:
+					_fight.game_speed = maxf(0.25, _fight.game_speed - 0.1)
+			KEY_F11:
+				if _fight:
+					_fight.game_speed = minf(3.0, _fight.game_speed + 0.1)
 			KEY_BRACKETLEFT:  _index = wrapi(_index - 1, 0, UMK3StageList.STAGES.size()); _frame = 0; _load_stage()
 			KEY_BRACKETRIGHT: _index = wrapi(_index + 1, 0, UMK3StageList.STAGES.size()); _frame = 0; _load_stage()
 			KEY_SPACE:

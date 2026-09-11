@@ -121,6 +121,25 @@ const START_GAP := 110
 const TICK_HZ := 60.0
 const MAX_CATCHUP := 4
 
+## A multiplier on the tick rate: the whole game's speed in one number.
+##
+## **The engine ticks once per drawn frame.** `UpdateArcadeCode` calls
+## `mk3_update` exactly once -- its two call sites are the one-player and the
+## multiplayer branches, not two ticks -- and its caller at 0x0002b15a runs it
+## once a frame after the pause checks. There is no accumulator and no fixed
+## step anywhere in that path.
+##
+## So the original's speed IS its frame rate, and that number lives in
+## `-[EAGLView setAnimationInterval:]`, which is reached through objc_msgSend
+## and has not been traced back to its caller. Every per-frame value measured so
+## far -- 3.25 units of walk, 0.5 of gravity, a rate of 3 -- is per whatever
+## that interval turns out to be.
+##
+## 60 is this port's assumption and not a reading. F10 and F11 move it live with
+## the result in the HUD, so the feel can be dialled and the number reported
+## back -- and then looked for in the binary knowing what it should be.
+var game_speed := 1.0
+
 # ============================== Scorpion's animations, by their engine id
 #
 # Every clip is now the engine's OWN stream out of `_nj_ani_data` -- see
@@ -189,7 +208,13 @@ const MOVE_ANI := [
 ##
 ## F8 and F9 move it live and the HUD shows it, so the number gets chosen by
 ## playing rather than by argument.
-static var ANIM_RATE := 3
+##
+## **An instance variable, not a `static var`.** It was static, and the shell
+## set it through its `preload`ed reference to this script -- which crashes:
+## assigning a static through a script Variant is not the same as assigning it
+## through the class name, and F8 took the game down with it. The fight is a
+## node the shell already holds, so there is no reason to reach around it.
+var anim_rate := 3
 
 # ================================================== the walk, measured
 #
@@ -487,8 +512,8 @@ func _pressed_button(f: Fight, raw: int) -> int:
 # ----------------------------------------------------------- the state machine
 func _move_frames(mv: int) -> int:
 	if mv <= MV_NONE or mv >= MOVE_ANI.size():
-		return ANIM_RATE
-	return _ani_length(MOVE_ANI[mv], ANIM_RATE)
+		return anim_rate
+	return _ani_length(MOVE_ANI[mv], anim_rate)
 
 
 func _move_reach(mv: int) -> int:
@@ -709,27 +734,27 @@ func tick() -> void:
 ## Which of the engine's animations this fighter is showing, and at what rate.
 ##
 ## The rate is measured for the walk and assumed for everything else; see
-## ANIM_RATE.
+## anim_rate.
 func _ani_for(f: Fight) -> Array:
 	match f.st:
 		St.ATTACK:
-			return [MOVE_ANI[f.move], ANIM_RATE]
+			return [MOVE_ANI[f.move], anim_rate]
 		St.HIT:
-			return [ANI_DUCK_HIT if f.table == BT_DUCK else ANI_HIT, ANIM_RATE]
+			return [ANI_DUCK_HIT if f.table == BT_DUCK else ANI_HIT, anim_rate]
 		St.BLOCK:
-			return [ANI_BLOCK, ANIM_RATE]
+			return [ANI_BLOCK, anim_rate]
 		St.DUCK:
-			return [ANI_DUCK, ANIM_RATE]
+			return [ANI_DUCK, anim_rate]
 		St.JUMP:
 			return [ANI_JUMPFLIP if f.table == BT_ANGLE_JUMP else ANI_JUMP,
-				ANIM_RATE]
+				anim_rate]
 		St.WALK_F:
 			return [ANI_WALK_F, WALK_FORWARD[CHARACTER][WALK_RATE]]
 		St.WALK_B:
 			return [ANI_WALK_B, WALK_BACKWARD[CHARACTER][WALK_RATE]]
 	if f.health == 0:
-		return [ANI_VICTORY, ANIM_RATE]
-	return [ANI_STANCE, ANIM_RATE]
+		return [ANI_VICTORY, anim_rate]
+	return [ANI_STANCE, anim_rate]
 
 
 ## One animation's [name, loops, frames], or an empty one.
@@ -829,8 +854,9 @@ func _process(dt: float) -> void:
 	# over a few frames instead of simulating a thousand at once.
 	_accum += dt
 	var n := 0
-	while _accum >= 1.0 / TICK_HZ and n < MAX_CATCHUP:
-		_accum -= 1.0 / TICK_HZ
+	var step := 1.0 / (TICK_HZ * maxf(game_speed, 0.05))
+	while _accum >= step and n < MAX_CATCHUP:
+		_accum -= step
 		tick()
 		n += 1
 	if n == MAX_CATCHUP:
