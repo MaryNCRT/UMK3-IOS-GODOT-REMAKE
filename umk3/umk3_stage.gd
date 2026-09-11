@@ -38,19 +38,23 @@ var error := ""
 
 ## Light the geometry with `LightVert`, the engine's own model.
 ##
-## **Off by default, and that is the honest setting.** The game does NOT light
-## stages this way: it bakes them into `.lighting` files, and that encoding is
-## not decoded. Applying LightVert instead is not a neutral approximation --
-## light 0 ships with a power of zero, so almost every surface receives only
-## the viewer's `fill` term and the whole graveyard comes out nearly black.
+## **On, by the user's decision, and what that means is worth stating.**
 ##
-## An undecoded bake means "we do not know what this looked like". Drawing the
-## texture at full brightness says that; drawing it through a model the game
-## does not use here says something false and looks it.
+## The game does NOT light stages this way. It bakes them, and `.lighting` is
+## not decoded -- 341 files, 62% zero bytes, all 256 values present, which looks
+## like delta coding and saying more would be guessing. So neither setting here
+## is "what the game shows": one is the texture at full brightness, the other is
+## the engine's own rig applied to normals that really are in the `.meshset` and
+## that the iOS loader discards.
 ##
-## Turn it on to see what the rig does -- it is the right model for CHARACTERS,
-## where the game really does run it per vertex.
-@export var use_lighting := false
+## Between two approximations the choice is a look, and looks are the user's
+## call: they asked for this one after seeing both side by side. It is darker --
+## light 0 ships with a power of zero, so most surfaces get light 1 and the
+## viewer's `fill` -- and it gives the stage the depth a night graveyard has
+## instead of a flat bright wall.
+##
+## `--stagelight 0` turns it off; the comparison is two commands away.
+@export var use_lighting := true
 
 ## How far the stage reaches, in its own units. Worth having: Graveyard's moon
 ## sits about 27,500 units out, and a camera far plane sized to a fighter

@@ -14,7 +14,7 @@ const _Audio := preload("res://umk3/umk3_audio.gd")
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-11 10:10  side-on + audio"
+const BUILD := "2026-09-11 14:45  stage lighting on"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -49,6 +49,10 @@ var _frame := 0
 var _in_stage := false
 var _drive := -1
 var _pose := -1
+## `--stagelight 0` turns the stage lighting OFF. On is the default; see
+## umk3_stage.gd for why this is a choice between two approximations rather
+## than a setting with a right answer.
+var _stage_light := true
 
 
 func _ready() -> void:
@@ -94,6 +98,7 @@ func _ready() -> void:
 			"--pose":   _pose = int(args[i + 1])
 			"--yaw":    _Fighter.yaw_right = float(args[i + 1])
 			"--wait":   _shot_at_want = int(args[i + 1])
+			"--stagelight": _stage_light = int(args[i + 1]) != 0
 			"--shot":
 				_shot = args[i + 1]
 				set_process(true)
@@ -211,6 +216,7 @@ func _load_stage() -> void:
 	if _stage:
 		_stage.queue_free()
 	_stage = _Stage.new()
+	_stage.use_lighting = _stage_light
 	_world.add_child(_stage)
 	var stem: String = UMK3StageList.STAGES[_index]
 	if not _stage.build(_menu.res_dir, stem, _frame):
