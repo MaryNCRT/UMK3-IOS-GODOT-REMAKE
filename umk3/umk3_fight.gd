@@ -87,8 +87,18 @@ const FX := 16                          ## 16.16, the engine's fixed point
 const ONE := 1 << FX
 
 ## **The walk is MEASURED now, not chosen.** See WALK_FORWARD below.
-const JUMP_VY := int(-10.0 * ONE)       ## one negative vy ...
-const GRAVITY := int(0.40 * ONE)        ## ... against one positive g
+## **The jump is measured now.** `t_do_jump_up` (0x000580e8) loads a literal
+## into `obj->field20` and computes `obj->field24 = field20 + 0xa8000`, and
+## `t_flight_call` (0x00055aec) copies the first into the part's 0x1c -- the y
+## velocity -- and the second into 0x20, the gravity. The literal at 0x000581d0
+## is -655360, which is exactly -10.0 in 16.16, and -10.0 + 0xa8000 is +0.5.
+##
+## So the jump velocity this port GUESSED at -10.0 was right, and the gravity it
+## guessed at 0.40 was not: it is 0.5.
+##
+## (0xd in either field means "leave this one alone" -- a sentinel, not a value.)
+const JUMP_VY := int(-10.0 * ONE)       ## measured, 0x000581d0
+const GRAVITY := int(0.5 * ONE)         ## measured, field20 + 0xa8000
 const JUMP_VX := int(6.0 * ONE)         ## an angled jump's horizontal speed
 
 ## **How long a move lasts is its animation's length**, and now that is the
@@ -97,7 +107,13 @@ const T_HIT := 16
 const REACH_PUNCH := 70
 const REACH_KICK := 86
 const DAMAGE := 4
-const START_GAP := 55
+## Half the gap a round opens with. **Still chosen, and now visibly so.**
+##
+## At the old 1.946 scale 55 either side looked like a fight; at the real 1:1 it
+## puts two 78-unit-wide models 110 apart, which is close enough to touch. The
+## round-start code that holds the real number is not decompiled -- `init_players`
+## (0x0005a418) sets up the slots but the positions are not in it.
+const START_GAP := 110
 
 ## The engine runs at a fixed rate and so does this: every duration in the
 ## fight is counted in FRAMES. Tying the tick to the display made every speed
@@ -153,13 +169,27 @@ const MOVE_ANI := [
 ## How many game frames one animation frame is held for, when the animation's
 ## own rate has not been recovered.
 ##
-## **The walk's rate is measured** -- it is the other half of the walk table,
-## and it is 5. Every other state sets its own literal before `init_anirate`
-## (`run_setup` uses 3, `t_r_rabbit` uses 4), and those live in the per-move
-## states, which are not decompiled. So one assumption covers all of them and it
-## is the one number here that IS from the game, rather than a second invention
-## next to it.
-const ANIM_RATE := 5
+## **The walk's rate is measured and is 5** -- the other half of the walk table.
+## The basic punches and kicks set NO rate at all: `t_joy_hi_punch` writes
+## `field40 = 0xe`, calls `get_char_ani` and never touches `init_anirate`, so it
+## inherits whatever the last state left behind. Which state that was depends on
+## how the fighter got there, and following that is a larger job than this one.
+##
+## So this is a choice, and it is made from the distribution rather than by
+## taste. Of the 70 calls to `init_anirate` in the binary, 57 carry a small
+## literal immediately before:
+##
+##     rate 0   2 sites     rate 3  16 sites     rate 6   5 sites
+##     rate 1   4 sites     rate 4  17 sites     rate 8   1 site
+##     rate 2   8 sites     rate 5   3 sites     rate 15  1 site
+##
+## **3 and 4 are 33 of the 57. 5 is three of them.** The first version used 5,
+## the walk's, and the answer that came back was that the animations felt slow.
+## They were: sitting at the slow end of a distribution whose middle is 3 to 4.
+##
+## F8 and F9 move it live and the HUD shows it, so the number gets chosen by
+## playing rather than by argument.
+static var ANIM_RATE := 3
 
 # ================================================== the walk, measured
 #
@@ -203,6 +233,27 @@ const WALK_BACKWARD := [
 ## Which row of those tables this fight uses. 18 is SCORPION, from
 ## docs/ROSTER.md in the C project -- six independent readings agreeing.
 const CHARACTER := 18
+
+## How tall each fighter is, in engine units. `_ochar_ground_offsets` at
+## 0x0016ef04, one int32 per character.
+##
+## **This is the scale between the engine's world and the stage's, and it is
+## 1:1.** The port derived that scale from `mk3_getbbox`'s hard-coded 56 x 72
+## box -- the only one in the binary, belonging to one animation -- and got
+## 140.1 / 72 = 1.946. Against this table Scorpion is 139 units and the model
+## measures 140.1, so one engine unit is one scene unit to within a per cent.
+##
+## The difference is not academic. At 1.946 the arena came out 2,713 scene units
+## wide against Graveyard's 2,839-unit ground plane: the fighters could walk to
+## the edge of the world, which is exactly what they did. At 1.008 the arena is
+## 1,405 -- half the stage, centred, which is what an arena looks like.
+##
+## The ordering reads true as body heights: Shang Tsung 136, Kung Lao 140, Jax
+## and Sheeva 158, Motaro 168, Shao Kahn 173.
+const GROUND_OFFSET := [
+	144, 143, 158, 144, 142, 147, 144, 147, 147, 140, 148, 158, 136,
+	139, 147, 139, 139, 139, 139, 139, 139, 139, 139, 139, 168, 173,
+]
 
 
 enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT }
@@ -335,11 +386,11 @@ func setup(res_dir: String, textures, cam: Camera3D, stem := "SCORPION_STANDARD"
 	height = fighters[0].node.height
 	width = fighters[0].node.width
 	depth = fighters[0].node.depth
-	# **Height, not width.** The two ratios disagree by 39 per cent, because
-	# `mk3_getbbox`'s hard-coded 56 x 72 is a HITBOX for one animation and not
-	# the model's outline. The height is the one both systems describe the same
-	# way: the engine's floor is at 547 and a fighter's head is 72 above it.
-	scale_units = height / float(BOX_H)
+	# **Against the character's own height, not the hitbox.** `mk3_getbbox`'s
+	# 56 x 72 is one animation's hitbox and was the only height this port had;
+	# `_ochar_ground_offsets` is the real one, per character, and it makes the
+	# scale 1:1. See GROUND_OFFSET.
+	scale_units = height / float(GROUND_OFFSET[CHARACTER])
 	reset()
 	return true
 
