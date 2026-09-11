@@ -85,8 +85,7 @@ const MOVE_NAME := ["", "hi punch", "lo punch", "block", "hi kick", "lo kick",
 const FX := 16                          ## 16.16, the engine's fixed point
 const ONE := 1 << FX
 
-const WALK_VX := int(4.0 * ONE)         ## forward walk, units per frame
-const WALK_BACK_VX := int(3.0 * ONE)    ## backing up is slower
+## **The walk is MEASURED now, not chosen.** See WALK_FORWARD below.
 const JUMP_VY := int(-10.0 * ONE)       ## one negative vy ...
 const GRAVITY := int(0.40 * ONE)        ## ... against one positive g
 const JUMP_VX := int(6.0 * ONE)         ## an angled jump's horizontal speed
@@ -97,8 +96,6 @@ const JUMP_VX := int(6.0 * ONE)         ## an angled jump's horizontal speed
 const ANIM_HOLD := 2
 const IDLE_HZ := 12.0
 const T_HIT := 16
-## The walk advances with DISTANCE, which is what keeps the feet from skating.
-const WALK_STRIDE := 8
 const REACH_PUNCH := 70
 const REACH_KICK := 86
 const DAMAGE := 4
@@ -148,6 +145,50 @@ const CL_MOVE := [
 	[54, 56],        # SCFLIPKICK
 ]
 
+# ================================================== the walk, measured
+#
+# `_walk_forward_info` at 0x0016ef6c and `_walk_backward_info` at 0x0016f03c,
+# eight bytes per character, indexed by `part->field24` -- the character number.
+# `decode_walk_table` (0x000552dc) reads them:
+#
+#     entry[0]        -> obj->field1c, and init_anirate takes it as the RATE:
+#                        one animation frame every N game frames
+#     entry[1] << 4   -> obj->field20, the speed, in 16.16
+#
+# then `walk_flip_reverse` negates the speed when bit 4 of the part's 0x28 --
+# the facing flag -- is set, and `get_walk_info_b` negates it once more, which
+# is the whole of what makes backing up go the other way.
+#
+# State 0x45c of `plyrthread` calls the routine, calls `init_anirate`, copies
+# the speed into 0x1c and calls `set_x_vel_player`. So both numbers come out of
+# the same eight bytes, and the fight was using neither: 4.0 and 3.0 units a
+# frame, chosen, against a real 3.25 and 2.25.
+#
+# Speeds are the raw 16.16 the engine holds, so nothing is converted twice.
+const WALK_RATE := 0
+const WALK_SPEED := 1
+const WALK_FORWARD := [
+	[5, 229376], [5, 196608], [5, 196608], [5, 212992], [5, 212992],
+	[5, 196608], [5, 229376], [5, 212992], [5, 212992], [5, 212992],
+	[5, 196608], [5, 196608], [5, 204800], [5, 204800], [5, 212992],
+	[5, 212992], [5, 229376], [5, 212992], [5, 212992], [5, 212992],
+	[5, 212992], [5, 212992], [5, 262144], [5, 327680], [4, 270336],
+	[3, 327680],
+]
+const WALK_BACKWARD := [
+	[5, 147456], [5, 147456], [5, 147456], [5, 147456], [5, 147456],
+	[5, 147456], [5, 147456], [5, 147456], [5, 147456], [5, 147456],
+	[5, 147456], [5, 147456], [5, 147456], [5, 147456], [5, 147456],
+	[5, 147456], [5, 147456], [5, 147456], [5, 147456], [5, 147456],
+	[5, 147456], [5, 147456], [5, 163840], [5, 196608], [4, 262144],
+	[4, 262144],
+]
+
+## Which row of those tables this fight uses. 18 is SCORPION, from
+## docs/ROSTER.md in the C project -- six independent readings agreeing.
+const CHARACTER := 18
+
+
 enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT }
 
 ## The keyboard, the same map the C build uses: player one is the left hand
@@ -179,9 +220,31 @@ class Fight extends RefCounted:
 	var wins := 0
 	var prev_buttons := 0
 	var table: Array = BT_STANCE
-	var anim_t := 0.0
+	## The engine's animation clock, from `init_anirate` and `next_anirate`.
+	## `ani_rate` game frames per animation frame, counted down in `ani_count`.
+	var ani_rate := 5
+	var ani_count := 1
+	var ani_index := 0
 	var anim_last := -1
 	var node = null
+
+	## init_anirate: the rate is loaded and the countdown starts at ONE, so the
+	## first advance happens on the very next frame rather than `rate` frames
+	## later.
+	func start_walk(rate: int) -> void:
+		ani_rate = maxi(rate, 1)
+		ani_count = 1
+		ani_index = 0
+
+	## next_anirate: decrement, and on reaching zero reload and step the frame.
+	## Returns true on the frames the animation actually advanced.
+	func tick_anirate(span: int) -> bool:
+		ani_count -= 1
+		if ani_count > 0:
+			return false
+		ani_count = ani_rate
+		ani_index = (ani_index + 1) % maxi(span, 1)
+		return true
 
 	func xi() -> int:
 		return x >> FX
@@ -275,7 +338,9 @@ func reset() -> void:
 		f.connected = false
 		f.prev_buttons = 0
 		f.table = BT_STANCE
-		f.anim_t = 0.0
+		f.ani_rate = WALK_FORWARD[CHARACTER][WALK_RATE]
+		f.ani_count = 1
+		f.ani_index = 0
 		f.anim_last = -1
 	frame = 0
 
@@ -437,13 +502,17 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		f.table = BT_ANGLE_JUMP if (raw & (dir_f | dir_b)) else BT_JUMP
 		return
 	elif raw & dir_f:
+		if f.st != St.WALK_F:
+			f.start_walk(WALK_FORWARD[CHARACTER][WALK_RATE])
 		f.st = St.WALK_F
 		f.table = BT_STANCE
-		vx = WALK_VX * f.facing
+		vx = WALK_FORWARD[CHARACTER][WALK_SPEED] * f.facing
 	elif raw & dir_b:
+		if f.st != St.WALK_B:
+			f.start_walk(WALK_BACKWARD[CHARACTER][WALK_RATE])
 		f.st = St.WALK_B
 		f.table = BT_STANCE
-		vx = -WALK_BACK_VX * f.facing
+		vx = -WALK_BACKWARD[CHARACTER][WALK_SPEED] * f.facing
 	else:
 		f.st = St.STANCE
 		f.table = BT_STANCE
@@ -509,6 +578,21 @@ func tick() -> void:
 
 	for i in 2:
 		_think(fighters[i], fighters[1 - i], raw[i])
+
+	# The animation clock runs on the GAME's tick, not on the renderer's. The
+	# walk cycle is the only clip driven this way so far, because it is the only
+	# one whose rate the walk table gives.
+	for f in fighters:
+		if f.st == St.WALK_F or f.st == St.WALK_B:
+			var span := CL_WALK[1] - CL_WALK[0] + 1
+			if f.tick_anirate(span) and audio:
+				# Two footfalls in the cycle. WHICH frames they land on is a
+				# choice: the clip names them SCWALK1..9 and nothing marks
+				# contact.
+				@warning_ignore("integer_division")
+				var half := span / 2
+				if f.ani_index == 0 or f.ani_index == half:
+					audio.step()
 	_resolve_hits(fighters[0], fighters[1])
 	_resolve_hits(fighters[1], fighters[0])
 
@@ -571,22 +655,19 @@ func _pose(f: Fight) -> void:
 	var span: int = maxi(to - from + 1, 1)
 
 	if f.st == St.WALK_F or f.st == St.WALK_B:
-		# **The walk is driven by distance, not by the clock.** `anim_t` counts
-		# animation frames and advances by however far the fighter actually
-		# moved, so the contact foot stays planted at any speed.
-		f.anim_t += absf(float(f.vx) / float(ONE)) / float(WALK_STRIDE)
-		var pos := fmod(f.anim_t, float(span))
-		var idx := int(pos)
-		# Two footfalls in a nine-frame cycle. WHICH frames they are on is a
-		# choice: the clip names them SCWALK1..9 and nothing marks contact.
-		@warning_ignore("integer_division")
-		var half := span / 2
-		if idx != f.anim_last and audio and (idx == 0 or idx == half):
-			audio.step()
-		f.anim_last = idx
-		f.node.set_pose(from + idx, from + ((idx + 1) % span), pos - floorf(pos))
+		# **The walk runs on the engine's own clock**, one animation frame every
+		# `ani_rate` game frames -- five for everyone but Motaro and Shao Kahn.
+		# That number and the speed come out of the same eight bytes of the walk
+		# table, which is why the feet keep up with the ground without anything
+		# here having to arrange it.
+		#
+		# This used to advance with DISTANCE instead, to stop the feet skating
+		# at a speed that was itself invented. With the real speed and the real
+		# rate there is nothing to compensate for.
+		var idx: int = f.ani_index
+		var frac := 1.0 - float(f.ani_count) / float(maxi(f.ani_rate, 1))
+		f.node.set_pose(from + idx, from + ((idx + 1) % span), frac)
 		return
-	f.anim_last = -1
 
 	if loop:
 		var pos := _now * IDLE_HZ
@@ -683,10 +764,11 @@ func _process(dt: float) -> void:
 func status() -> String:
 	var names := ["STANCE", "WALK-F", "WALK-B", "DUCK", "BLOCK", "JUMP",
 		"ATTACK", "HIT"]
-	var out := "%d fps   pose %.1f ms
+	var out := "%d fps   pose %.1f ms   tick %d
 " % [
 		Engine.get_frames_per_second(),
-		(fighters[0].node.pose_usec + fighters[1].node.pose_usec) / 1000.0]
+		(fighters[0].node.pose_usec + fighters[1].node.pose_usec) / 1000.0,
+		frame]
 	for i in fighters.size():
 		var f := fighters[i]
 		out += "P%d %3d hp  %-7s %-11s  x %5d  y %5d  %s\n" % [
