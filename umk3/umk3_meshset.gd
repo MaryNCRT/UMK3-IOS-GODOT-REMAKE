@@ -119,6 +119,8 @@ func _parse_as(b: PackedByteArray, v: String, out: Array[MeshRecord]) -> int:
 		if off + vbytes > size:
 			return -1
 
+		var pos_div := m.radius if m.radius != 0.0 else 1.0
+
 		m.positions.resize(vcount)
 		m.uvs.resize(vcount)
 		if v == "A":
@@ -129,10 +131,18 @@ func _parse_as(b: PackedByteArray, v: String, out: Array[MeshRecord]) -> int:
 				# int16 x,y,z then two UNALIGNED floats at +6 and +10. The
 				# trailing 12 bytes are almost certainly the normal and the
 				# engine discards them -- lighting comes from .lighting.
+				#
+				# **Divided by the mesh's boundsRadius, NOT by 32767.**
+				# docs/MESHSET-FORMAT.md says `int16 / 32767`, and that is what
+				# this file did first: every mesh came out two units across,
+				# correctly placed and far too small to see. The working C
+				# loader in runtime/lime/meshset.c divides by `radius` instead,
+				# and it is the one that renders. A zero radius falls back to
+				# 1 rather than producing infinities, as it does there.
 				m.positions[k] = Vector3(
-					float(b.decode_s16(p)) / 32767.0,
-					float(b.decode_s16(p + 2)) / 32767.0,
-					float(b.decode_s16(p + 4)) / 32767.0)
+					float(b.decode_s16(p)) / pos_div,
+					float(b.decode_s16(p + 2)) / pos_div,
+					float(b.decode_s16(p + 4)) / pos_div)
 				m.uvs[k] = Vector2(b.decode_float(p + 6), b.decode_float(p + 10))
 				m.normals[k] = Vector3(
 					b.decode_float(p + 14),

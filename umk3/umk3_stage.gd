@@ -36,11 +36,21 @@ var scene_graph := _Scene.new()
 var textures = null
 var error := ""
 
-## Light the geometry with the engine's own model. See umk3_light.gd: this is
-## NOT what the game does for stages -- it bakes them into .lighting files and
-## that encoding is not decoded -- but the normals really are in the .meshset
-## and the light rig really is the game's.
-@export var use_lighting := true
+## Light the geometry with `LightVert`, the engine's own model.
+##
+## **Off by default, and that is the honest setting.** The game does NOT light
+## stages this way: it bakes them into `.lighting` files, and that encoding is
+## not decoded. Applying LightVert instead is not a neutral approximation --
+## light 0 ships with a power of zero, so almost every surface receives only
+## the viewer's `fill` term and the whole graveyard comes out nearly black.
+##
+## An undecoded bake means "we do not know what this looked like". Drawing the
+## texture at full brightness says that; drawing it through a model the game
+## does not use here says something false and looks it.
+##
+## Turn it on to see what the rig does -- it is the right model for CHARACTERS,
+## where the game really does run it per vertex.
+@export var use_lighting := false
 
 ## How far the stage reaches, in its own units. Worth having: Graveyard's moon
 ## sits about 27,500 units out, and a camera far plane sized to a fighter
