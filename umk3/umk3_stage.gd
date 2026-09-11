@@ -28,6 +28,7 @@ const _Scene := preload("res://umk3/umk3_scene.gd")
 const _Textures := preload("res://umk3/umk3_textures.gd")
 const _Light := preload("res://umk3/umk3_light.gd")
 const _Effects := preload("res://umk3/umk3_effects.gd")
+const _Fighter := preload("res://umk3/umk3_fighter.gd")
 
 ## Set before `build` to see what was loaded.
 @export var verbose := true
@@ -67,6 +68,10 @@ func build(res_dir: String, stem: String, frame: int = 0) -> bool:
 	error = ""
 	for c in get_children():
 		c.queue_free()
+	# **The stage is in ENGINE units and the world is in metres.** A stage
+	# object and a fighter measured the same before this; scaling the stage node
+	# keeps that true and puts both in the unit every other tool uses.
+	scale = Vector3.ONE * _Fighter.METRES_PER_UNIT
 
 	if textures == null:
 		textures = _Textures.new(res_dir)
@@ -128,7 +133,9 @@ func build(res_dir: String, stem: String, frame: int = 0) -> bool:
 		error = "%s: nothing placed" % stem
 		return false
 
-	reach = maxf(hi.length(), lo.length())
+	# `reach` is used for the camera's far plane, which is set in world space,
+	# so it is reported in METRES like everything else.
+	reach = maxf(hi.length(), lo.length()) * _Fighter.METRES_PER_UNIT
 
 	# The stage's effects: the mist in Graveyard, the torches on the Balcony,
 	# the blades in the Pit. Placed from `.events`, which is the file that

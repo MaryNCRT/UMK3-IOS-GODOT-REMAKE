@@ -32,6 +32,22 @@ const _MeshSet := preload("res://umk3/umk3_meshset.gd")
 ## 1.0 makes the fighter 1.311x too big for the arena.
 const PLAYER_TO_SCENE := 0.762836
 
+## **The world is in METRES.**
+##
+## `_ochar_ground_offsets` says a fighter is 139 engine units tall and the
+## skinned model measures 140.1 of its own, so one engine unit was one model
+## unit -- but neither is a metre, and a scene where a man is 140 units tall is
+## a scene no other tool agrees with. A fighter is 1.8 m, so one engine unit is
+## 1.8 / 139 metres and the model is scaled to match.
+##
+## Everything that was in engine units is multiplied by this in ONE place per
+## system: here for the model, `scale_units` in the fight for positions, and the
+## stage node's own scale. Nothing else changes, because every other number in
+## the fight is a ratio.
+const FIGHTER_METRES := 1.8
+const ENGINE_HEIGHT := 139.0
+const METRES_PER_UNIT := FIGHTER_METRES / ENGINE_HEIGHT
+
 ## Build a fresh pose every frame, INTERPOLATED between the two the clip is
 ## between, which is what the engine does.
 ##
@@ -153,6 +169,14 @@ func load_character(res_dir: String, stem: String, textures) -> bool:
 	# two thirds the height he should be. The C project measures
 	# `CL_STANCE.from` for the same reason.
 	measure(216)
+	# The model's own units into metres: it measured `height` tall and a fighter
+	# is 1.8 m.
+	if height > 0.0:
+		var s := FIGHTER_METRES / height
+		_body.scale = Vector3(s, s, s)
+		_shadow.transform = Transform3D(
+			Basis.from_scale(Vector3(s, 0.0, s)), Vector3(0.0, 0.01, 0.0))
+		measure(216)
 	return true
 
 
@@ -217,6 +241,7 @@ func _try_imported() -> bool:
 ## pose's box whatever is on screen.
 func measure(frame: int) -> void:
 	set_pose(frame, frame, 0.0)
+	var sc: float = _body.scale.y
 	if _skel != null and skin != null:
 		var r: Array = skin.skin(skin.pose(frame, frame, 0.0))
 		var pos: PackedVector3Array = r[0]
@@ -228,16 +253,16 @@ func measure(frame: int) -> void:
 			var q: Vector3 = p * PLAYER_TO_SCENE
 			lo = Vector3(minf(lo.x, q.x), minf(lo.y, q.y), minf(lo.z, q.z))
 			hi = Vector3(maxf(hi.x, q.x), maxf(hi.y, q.y), maxf(hi.z, q.z))
-		height = hi.y - lo.y
-		width = hi.x - lo.x
-		depth = hi.z - lo.z
-		feet = lo.y
+		height = (hi.y - lo.y) * sc
+		width = (hi.x - lo.x) * sc
+		depth = (hi.z - lo.z) * sc
+		feet = lo.y * sc
 		return
 	var aabb: AABB = _body.mesh.get_aabb() if _body.mesh else AABB()
-	height = aabb.size.y
-	width = aabb.size.x
-	depth = aabb.size.z
-	feet = aabb.position.y
+	height = aabb.size.y * sc
+	width = aabb.size.x * sc
+	depth = aabb.size.z * sc
+	feet = aabb.position.y * sc
 
 
 ## Expand the indexed skinned positions into a plain triangle list.
@@ -473,6 +498,12 @@ func share(other) -> bool:
 	width = other.width
 	depth = other.depth
 	feet = other.feet
+	# **And the scale, which is not part of the mesh.** Sharing copied the
+	# measurements and left the node at 1.0, so the second fighter stood 140
+	# metres tall and filled the screen with a dark wall nobody recognised as a
+	# fighter.
+	_body.scale = other._body.scale
+	_shadow.transform = other._shadow.transform
 	set_pose(216, 216, 0.0)
 	return true
 

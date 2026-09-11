@@ -11,11 +11,12 @@ const _Fight := preload("res://umk3/umk3_fight.gd")
 const _Fighter := preload("res://umk3/umk3_fighter.gd")
 const _Audio := preload("res://umk3/umk3_audio.gd")
 const _Effects := preload("res://umk3/umk3_effects.gd")
+const _InputHud := preload("res://umk3/umk3_inputhud.gd")
 
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-11 19:20  rate 6 inherited, hitbox on H"
+const BUILD := "2026-09-11 21:00  specials, input panel, metres"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -27,6 +28,7 @@ var _fight
 var _audio
 var _cam: Camera3D
 var _hud: Label
+var _keys: Control
 var _world: Node3D
 
 ## Two ways to look at the same stage: the fight, and the free camera that was
@@ -49,6 +51,8 @@ var _index := 0
 var _frame := 0
 var _in_stage := false
 var _drive := -1
+## `--seq 4,0,4,0,32` plays one input word per tick, for testing a notation.
+var _seq := ""
 var _pose := -1
 ## `--stagelight 0` turns the stage lighting OFF. On is the default; see
 ## umk3_stage.gd for why this is a choice between two approximations rather
@@ -56,6 +60,8 @@ var _pose := -1
 var _stage_light := true
 ## H toggles the hitboxes; `--hitbox 1` starts with them on.
 var _hitbox := false
+## `--gap N` sets the half-gap a round opens with, for testing reach and hits.
+var _gap := -1
 
 
 func _ready() -> void:
@@ -103,12 +109,14 @@ func _ready() -> void:
 			"--stage":  want_stage = int(args[i + 1])
 			"--screen": want_screen = int(args[i + 1])
 			"--drive":  _drive = int(args[i + 1])
+			"--seq":    _seq = args[i + 1]
 			"--pose":   _pose = int(args[i + 1])
 			"--yaw":    _Fighter.yaw_right = float(args[i + 1])
 			"--wait":   _shot_at_want = int(args[i + 1])
 			"--stagelight": _stage_light = int(args[i + 1]) != 0
 			"--fog":    _Effects.opacity = float(args[i + 1])
 			"--hitbox": _hitbox = int(args[i + 1]) != 0
+			"--gap":    _gap = int(args[i + 1])
 			"--shot":
 				_shot = args[i + 1]
 				set_process(true)
@@ -136,6 +144,11 @@ func _ready() -> void:
 func _process(_dt: float) -> void:
 	if _in_stage and _hud and _fight_mode and _fight != null:
 		_hud.text = _hud_text()
+		if _keys:
+			_keys.visible = true
+			_keys.set_state(_fight.last_raw, _fight.last_special)
+	elif _keys:
+		_keys.visible = false
 	if _shot == "":
 		return
 	if _shot_at == 0:
@@ -177,6 +190,11 @@ func _enter_stage(stem: String) -> void:
 		_hud.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
 		_hud.add_theme_constant_override("shadow_offset_y", 2)
 		add_child(_hud)
+		# The input panel, down the right-hand side. It shows the ENGINE's ten
+		# bits, so an input that does not light here never reached the fight.
+		_keys = _InputHud.new()
+		_keys.set_anchors_preset(Control.PRESET_FULL_RECT)
+		add_child(_keys)
 	_cam.current = true
 	_hud.visible = true
 	_load_stage()
@@ -210,7 +228,13 @@ func _ensure_fight() -> void:
 	_fight.visible = _fight_mode
 	if _drive >= 0:
 		_fight.forced[0] = _drive
+	if _seq != "":
+		for s in _seq.split(","):
+			_fight.forced_seq.append(int(s))
 	_fight.show_hitbox = _hitbox
+	if _gap >= 0:
+		_fight.start_gap = _gap
+		_fight.reset()
 	# `--pose N` freezes both fighters on one animation frame. The frame list
 	# names all 344 of Scorpion's, so this is how a clip range is checked
 	# against what it actually draws instead of against its name.

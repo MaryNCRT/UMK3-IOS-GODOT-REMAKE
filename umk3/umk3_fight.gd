@@ -22,6 +22,7 @@ extends Node3D
 
 const _Fighter := preload("res://umk3/umk3_fighter.gd")
 const _Ani := preload("res://umk3/umk3_scorpion_ani.gd")
+const _Moves := preload("res://umk3/umk3_moves.gd")
 
 # ============================================================ measured data
 #
@@ -136,13 +137,23 @@ const T_HIT := 16
 const REACH_PUNCH := 70
 const REACH_KICK := 86
 const DAMAGE := 4
+
+## How hard a hit pushes the victim back, and for how long.
+##
+## **Chosen.** The engine sends a struck fighter into a reaction state whose
+## velocity comes from the move that hit him, and those live in the per-move
+## states that are not decompiled. What IS measured is the shape: a reaction is
+## a state with its own animation and no input, and it ends when the animation
+## does -- which is why T_HIT is now the hit animation's own length rather than
+## a number.
+const KNOCKBACK := int(2.5 * ONE)
 ## Half the gap a round opens with. **Still chosen, and now visibly so.**
 ##
 ## At the old 1.946 scale 55 either side looked like a fight; at the real 1:1 it
 ## puts two 78-unit-wide models 110 apart, which is close enough to touch. The
 ## round-start code that holds the real number is not decompiled -- `init_players`
 ## (0x0005a418) sets up the slots but the positions are not in it.
-const START_GAP := 110
+var start_gap := 110
 
 ## The engine runs at a fixed rate and so does this: every duration in the
 ## fight is counted in FRAMES. Tying the tick to the display made every speed
@@ -307,7 +318,7 @@ const GROUND_OFFSET := [
 ]
 
 
-enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT }
+enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT, SPECIAL }
 
 ## The keyboard, the same map the C build uses: player one is the left hand
 ## plus U I O J K L, player two is the arrows and the numeric keypad.
@@ -345,6 +356,12 @@ class Fight extends RefCounted:
 	var ani_count := 1
 	var ani_index := 0
 	var node = null
+
+	## The special-move input buffer, and which special is running.
+	var buf = _Moves.Buffer.new()
+	var special := 0
+	var special_name := ""
+	var raw_prev := 0
 
 	## init_anirate: the rate is loaded and the countdown starts at ONE, so the
 	## first advance lands on the very next frame rather than `rate` frames
@@ -398,11 +415,14 @@ var enabled := true
 ## `--pose`, which is how a clip range is checked against what it draws.
 var frozen := false
 
-## A scripted ten-bit word, replacing the keyboard for one player. `--drive`
-## sets it, and it exists so that walking, jumping and punching can be SEEN in
-## a screenshot rather than asserted -- there is no way to claim input works
-## without watching something move.
+## A scripted input, replacing the keyboard for one player.
+##
+## `--drive` sets it. A single word is held; a LIST is played one tick each and
+## then holds the last -- which is what makes a special testable, since a
+## notation is a sequence of edges and a held word has exactly one.
 var forced := [-1, -1]
+var forced_seq: Array = []
+var _seq_at := 0
 
 ## Draw the hitboxes. H toggles it; `--hitbox 1` starts with it on.
 ##
@@ -413,6 +433,11 @@ var forced := [-1, -1]
 var show_hitbox := false
 
 var _boxes: Array[MeshInstance3D] = []
+## What the input panel shows: the word player one's fighter actually received,
+## and the special he just completed.
+var last_raw := 0
+var last_special := ""
+
 var _accum := 0.0
 var _cam: Camera3D = null
 var audio = null
@@ -454,7 +479,10 @@ func setup(res_dir: String, textures, cam: Camera3D, stem := "SCORPION_STANDARD"
 	# 56 x 72 is one animation's hitbox and was the only height this port had;
 	# `_ochar_ground_offsets` is the real one, per character, and it makes the
 	# scale 1:1. See GROUND_OFFSET.
-	scale_units = height / float(GROUND_OFFSET[CHARACTER])
+	# Metres per engine unit. The model is scaled to 1.8 m in the fighter, so
+	# this is the same conversion on the other side: positions, the hitbox and
+	# the camera all come out in metres.
+	scale_units = _Fighter.FIGHTER_METRES / float(GROUND_OFFSET[CHARACTER])
 	reset()
 	return true
 
@@ -466,7 +494,7 @@ func reset() -> void:
 		# at the walls would put twenty-four body widths between them.
 		@warning_ignore("integer_division")
 		var mid := (WALL_L + WALL_R) / 2
-		f.x = (mid + (START_GAP if i == 1 else -START_GAP)) * ONE
+		f.x = (mid + (start_gap if i == 1 else -start_gap)) * ONE
 		f.y = (FLOOR_Y - BOX_H) * ONE
 		f.vx = 0
 		f.vy = 0
@@ -489,6 +517,10 @@ func reset() -> void:
 
 # --------------------------------------------------------------------- input
 func _read_player(which: int) -> int:
+	if which == 0 and not forced_seq.is_empty():
+		var v: int = forced_seq[mini(_seq_at, forced_seq.size() - 1)]
+		_seq_at += 1
+		return v
 	if forced[which] >= 0:
 		return forced[which]
 	var bits := 0
@@ -576,6 +608,20 @@ func _start_attack(f: Fight, mv: int) -> void:
 		audio.swing(mv == MV_UPPERCUT or mv == MV_HI_KICK or mv == MV_LO_KICK)
 
 
+## The special the fighter just asked for, or an empty dictionary.
+##
+## **Bit 10 of the input word is the engine's own "a special was requested"**
+## and it goes to `seq_lookup` -- 7,608 bytes of playback.c nobody has
+## decompiled. This answers the same question from the notation tables instead;
+## umk3_moves.gd says which half is the game's and which is mine.
+func _special_asked(f: Fight, raw: int, airborne: bool) -> Dictionary:
+	f.buf.tick()
+	for sym in _Moves.events(raw, f.raw_prev, f.facing):
+		f.buf.push(sym)
+	f.raw_prev = raw
+	return _Moves.match_special(f.buf, airborne)
+
+
 func _think(f: Fight, other: Fight, raw: int) -> void:
 	var airborne := (f.yi() + BOX_H) < FLOOR_Y
 
@@ -604,6 +650,13 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.table = BT_JUMP if airborne else BT_STANCE
 				f.move = MV_NONE
 			return
+		St.SPECIAL:
+			if f.timer == 0:
+				f.st = St.STANCE
+				f.table = BT_STANCE
+				f.special = 0
+				f.special_name = ""
+			return
 		St.JUMP:
 			# A jump keeps whatever horizontal velocity it started with and
 			# only gravity acts.
@@ -622,7 +675,24 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 					_start_attack(f, f.table[b])
 			return
 
-	# On the ground and free to act.
+	# On the ground and free to act. **The special is asked first**: its last
+	# symbol is a button, and letting the ordinary button table see it turns
+	# every spear into a low punch.
+	var sp := _special_asked(f, raw, airborne)
+	if not sp.is_empty() and int(sp["ani"]) >= 0:
+		f.st = St.SPECIAL
+		f.special = int(sp["id"])
+		f.special_name = str(sp["name"])
+		f.timer = _ani_length(int(sp["ani"]), maxi(1, RATE_STANCE + rate_bias))
+		f.timer_total = f.timer
+		f.table = BT_NULL
+		f.connected = false
+		f.buf.clear()
+		f.vx = 0
+		if audio:
+			audio.voice()
+		return
+
 	var btn := _pressed_button(f, raw)
 
 	if raw & IN_DOWN:
@@ -670,6 +740,27 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 
 
 func _resolve_hits(a: Fight, b: Fight) -> void:
+	# A special connects too. **Its reach and damage are chosen**: the spear is
+	# a projectile in the real game and the teleport moves the fighter behind
+	# his opponent, and neither is implemented. What is implemented is the
+	# input, the animation, and that it lands.
+	if a.st == St.SPECIAL:
+		if a.connected:
+			return
+		@warning_ignore("integer_division")
+		var half := a.timer_total / 2
+		if a.timer == half and absi(b.xi() - a.xi()) < REACH_KICK * 2:
+			a.connected = true
+			b.health -= DAMAGE * 2
+			b.st = St.HIT
+			b.timer = _ani_length(ANI_HIT, maxi(1, RATE_STANCE + rate_bias))
+			b.timer_total = b.timer
+			b.table = BT_NULL
+			b.vx = KNOCKBACK * 2 * (1 if b.xi() > a.xi() else -1)
+			b.buf.clear()
+			if audio:
+				audio.hit(true, true)
+		return
 	if a.st != St.ATTACK or a.connected:
 		return
 	# The strike lands in the middle of the move, not at its start.
@@ -691,6 +782,9 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		return
 
 	a.connected = true
+	# The reaction: pushed away from whoever hit him, facing kept.
+	b.vx = KNOCKBACK * (1 if dx > 0 else -1)
+	b.buf.clear()
 	if b.st == St.BLOCK:
 		b.health -= 1                      # chip
 		if audio:
@@ -698,8 +792,12 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	else:
 		b.health -= DAMAGE
 		b.st = St.HIT
-		b.timer = T_HIT
-		b.timer_total = T_HIT
+		# **As long as the reaction animation, not a number.** The engine leaves
+		# a reaction when its stream ends; a fixed count is what made a hit feel
+		# detached from what was on screen.
+		var hit_ani: int = ANI_DUCK_HIT if b.table == BT_DUCK else ANI_HIT
+		b.timer = _ani_length(hit_ani, maxi(1, RATE_STANCE + rate_bias))
+		b.timer_total = b.timer
 		b.table = BT_NULL                  # how the engine takes input away
 		if audio:
 			audio.hit(a.move == MV_UPPERCUT,
@@ -714,6 +812,10 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 ## One 60 Hz frame.
 func tick() -> void:
 	var raw := [_read_player(0), _read_player(1)]
+	last_raw = raw[0]
+	last_special = ""
+	if fighters[0].st == St.SPECIAL and fighters[0].timer == fighters[0].timer_total:
+		last_special = fighters[0].special_name
 
 	for i in 2:
 		_think(fighters[i], fighters[1 - i], raw[i])
@@ -781,6 +883,11 @@ func tick() -> void:
 ## `init_anirate` does. See RATE_STANCE.
 func _ani_for(f: Fight) -> Array:
 	match f.st:
+		St.SPECIAL:
+			for s in _Moves.SPECIALS:
+				if int(s["id"]) == f.special:
+					return [int(s["ani"]), -1]
+			return [ANI_STANCE, -1]
 		St.ATTACK:
 			return [MOVE_ANI[f.move], -1]
 		St.HIT:
@@ -981,7 +1088,7 @@ func _wire_box(x0: float, y0: float, x1: float, y1: float,
 ## One line per fighter, for the HUD.
 func status() -> String:
 	var names := ["STANCE", "WALK-F", "WALK-B", "DUCK", "BLOCK", "JUMP",
-		"ATTACK", "HIT"]
+		"ATTACK", "HIT", "SPECIAL"]
 	var out := "%d fps   pose %.1f ms   tick %d
 " % [
 		Engine.get_frames_per_second(),
@@ -991,6 +1098,7 @@ func status() -> String:
 		var f := fighters[i]
 		out += "P%d %3d hp  %-7s %-11s  x %5d  y %5d  %s\n" % [
 			i + 1, f.health, names[f.st],
-			MOVE_NAME[f.move] if f.st == St.ATTACK else "",
+			f.special_name if f.st == St.SPECIAL else (
+				MOVE_NAME[f.move] if f.st == St.ATTACK else ""),
 			f.xi(), f.yi(), "->" if f.facing > 0 else "<-"]
 	return out
