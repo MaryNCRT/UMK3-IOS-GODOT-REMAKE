@@ -27,6 +27,7 @@ const _MeshSet := preload("res://umk3/umk3_meshset.gd")
 const _Scene := preload("res://umk3/umk3_scene.gd")
 const _Textures := preload("res://umk3/umk3_textures.gd")
 const _Light := preload("res://umk3/umk3_light.gd")
+const _Effects := preload("res://umk3/umk3_effects.gd")
 
 ## Set before `build` to see what was loaded.
 @export var verbose := true
@@ -128,6 +129,17 @@ func build(res_dir: String, stem: String, frame: int = 0) -> bool:
 		return false
 
 	reach = maxf(hi.length(), lo.length())
+
+	# The stage's effects: the mist in Graveyard, the torches on the Balcony,
+	# the blades in the Pit. Placed from `.events`, which is the file that
+	# carries a transform per instance and not just a position.
+	var fx = _Effects.new()
+	add_child(fx)
+	var n := fx.build(res_dir, stem, textures)
+	if n == 0:
+		fx.queue_free()
+	elif verbose:
+		print("[umk3] %s: %d effect instances" % [stem, n])
 
 	if verbose:
 		print("[umk3] %s: variant %s, %d meshes, %d tris, %d placed, reach %.0f"
