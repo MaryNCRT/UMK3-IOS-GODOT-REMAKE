@@ -63,6 +63,13 @@ const EXP1 := 3.5
 static var fill := 0.22
 
 
+## The second light's direction, for code that inlines this loop. See
+## umk3_skin.gd's `skin`: reaching in for the vector is how the hot path avoids
+## calling this function 1,278 times a frame.
+static func dir1() -> Vector3:
+	return _dir1
+
+
 static func vert(n: Vector3) -> float:
 	var l := 0.0                        # no ambient
 

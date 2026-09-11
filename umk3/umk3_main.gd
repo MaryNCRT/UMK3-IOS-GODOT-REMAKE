@@ -7,6 +7,14 @@ extends Node
 
 const _Menu := preload("res://umk3/umk3_menu.gd")
 const _Stage := preload("res://umk3/umk3_stage.gd")
+const _Fight := preload("res://umk3/umk3_fight.gd")
+const _Fighter := preload("res://umk3/umk3_fighter.gd")
+const _Audio := preload("res://umk3/umk3_audio.gd")
+
+## A stamp on screen, because "the fix is in" and "the fix is in the copy you
+## are running" are different claims and only the second one matters. Bump it
+## with every export.
+const BUILD := "2026-09-11 10:10  side-on + audio"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -14,9 +22,17 @@ const UMK3StageList := preload("res://umk3/umk3_stagelist.gd")
 
 var _menu: Control
 var _stage
+var _fight
+var _audio
 var _cam: Camera3D
 var _hud: Label
 var _world: Node3D
+
+## Two ways to look at the same stage: the fight, and the free camera that was
+## here before it. V switches. The viewer is still the thing to reach for when
+## a stage looks wrong -- it can orbit and step the scene's frames, which a
+## fight camera deliberately cannot.
+var _fight_mode := true
 
 var _yaw := 0.0
 var _pitch := -0.12
@@ -24,9 +40,15 @@ var _dist := 1.0
 var _focus := Vector3.ZERO
 var _shot := ""
 var _shot_at := 0
+## How many frames to run before the screenshot. The default is enough to get
+## past loading; a longer one is how a frame rate gets measured with the game
+## actually running, which is not what frame 20 shows.
+var _shot_at_want := 20
 var _index := 0
 var _frame := 0
 var _in_stage := false
+var _drive := -1
+var _pose := -1
 
 
 func _ready() -> void:
@@ -54,21 +76,40 @@ func _ready() -> void:
 	_menu.play_stage.connect(_enter_stage)
 	add_child(_menu)
 
+	# **Every flag is read BEFORE anything acts on one.** `--stage` enters the
+	# stage straight away, and when the parse ran in file order that happened
+	# before `--drive` had been seen -- so the scripted input was installed one
+	# frame after the fighter it was meant to drive, and the fighter just stood
+	# there looking like a broken state machine.
+	var args := OS.get_cmdline_user_args()
+	var want_stage := -1
+	var want_screen := -1
+	for i in args.size():
+		if i + 1 >= args.size():
+			continue
+		match args[i]:
+			"--stage":  want_stage = int(args[i + 1])
+			"--screen": want_screen = int(args[i + 1])
+			"--drive":  _drive = int(args[i + 1])
+			"--pose":   _pose = int(args[i + 1])
+			"--yaw":    _Fighter.yaw_right = float(args[i + 1])
+			"--wait":   _shot_at_want = int(args[i + 1])
+			"--shot":
+				_shot = args[i + 1]
+				set_process(true)
+
 	# `--stage N` goes straight in. It exists so the 3D path can be exercised
 	# without clicking through the menu, which is how an empty view gets
 	# diagnosed.
-	var args := OS.get_cmdline_user_args()
-	for i in args.size():
-		if args[i] == "--stage" and i + 1 < args.size():
-			await get_tree().process_frame
-			_enter_stage(UMK3StageList.STAGES[
-				wrapi(int(args[i + 1]), 0, UMK3StageList.STAGES.size())])
-			break
-	for i in args.size():
-		if args[i] == "--shot" and i + 1 < args.size():
-			_shot = args[i + 1]
-			_shot_at = 20
-			set_process(true)
+	if want_stage >= 0:
+		await get_tree().process_frame
+		_enter_stage(UMK3StageList.STAGES[
+			wrapi(want_stage, 0, UMK3StageList.STAGES.size())])
+	# `--screen N` shows a menu screen: 0 title, 1 main, 2 stage list. It exists
+	# so the layout can be checked at any window size without clicking.
+	if want_screen >= 0:
+		await get_tree().process_frame
+		_menu.show_screen(want_screen)
 
 
 ## `--shot <file>` writes what the window is showing and quits.
@@ -78,14 +119,22 @@ func _ready() -> void:
 ## GetWindowRect, SetForegroundWindow failed, and it captured the user's
 ## private windows instead. Never again: the program photographs itself.
 func _process(_dt: float) -> void:
+	if _in_stage and _hud and _fight_mode and _fight != null:
+		_hud.text = _hud_text()
 	if _shot == "":
 		return
+	if _shot_at == 0:
+		_shot_at = _shot_at_want
 	_shot_at -= 1
 	if _shot_at > 0:
 		return
 	await RenderingServer.frame_post_draw
 	var img := get_viewport().get_texture().get_image()
 	img.save_png(_shot)
+	if _fight and _in_stage:
+		for line in _fight.status().strip_edges().split("
+"):
+			print("[umk3] " + line)
 	print("[umk3] wrote " + _shot)
 	get_tree().quit()
 
@@ -97,6 +146,9 @@ func _enter_stage(stem: String) -> void:
 	_frame = 0
 	_menu.visible = false
 	_in_stage = true
+	# Which button opened the stage list decides what the stage is for.
+	if _menu.viewer_mode:
+		_fight_mode = false
 
 	if _cam == null:
 		_cam = Camera3D.new()
@@ -115,6 +167,44 @@ func _enter_stage(stem: String) -> void:
 	_load_stage()
 	# THIS is what reach is for: everything has to fit inside the frustum.
 	_cam.far = maxf(_stage.reach * 2.5, 1000.0)
+	_ensure_fight()
+
+
+## Scorpion, once. The skin is 1,278 vertices and 2,503 triangles and the
+## `.skinanim` is 344 frames; loading it per stage would be wasted work, so the
+## fight survives a stage change and only the stage under it is rebuilt.
+func _ensure_fight() -> void:
+	if _fight != null:
+		_fight.enabled = _fight_mode
+		_fight.visible = _fight_mode
+		return
+	if _audio == null:
+		_audio = _Audio.new(_menu.res_dir)
+		add_child(_audio)
+	_fight = _Fight.new()
+	_fight.audio = _audio
+	_world.add_child(_fight)
+	if not _fight.setup(_menu.res_dir, _menu.textures, _cam):
+		push_error("no fighter: " + str(_fight.error))
+		print("[umk3] no fighter: " + str(_fight.error))
+		_fight.queue_free()
+		_fight = null
+		_fight_mode = false
+		return
+	_fight.enabled = _fight_mode
+	_fight.visible = _fight_mode
+	if _drive >= 0:
+		_fight.forced[0] = _drive
+	# `--pose N` freezes both fighters on one animation frame. The frame list
+	# names all 344 of Scorpion's, so this is how a clip range is checked
+	# against what it actually draws instead of against its name.
+	if _pose >= 0:
+		_fight.enabled = false
+		_fight.frozen = true
+		for f in _fight.fighters:
+			f.node.set_pose(_pose, _pose, 0.0)
+	print("[umk3] fighter ready: %.1f tall, %.1f wide, %.1f deep, %.4f units per engine unit"
+		% [_fight.height, _fight.width, _fight.depth, _fight.scale_units])
 
 
 func _load_stage() -> void:
@@ -146,14 +236,31 @@ func _load_stage() -> void:
 	print("[umk3] all %s  play %s" % [aabb.size, play.size])
 	print("[umk3] focus %s  dist %.0f  far %.0f  meshes %d"
 		% [_focus, _dist, _cam.far, _stage.get_child_count()])
-	_hud.text = "%d/%d  %s   frame %d\n[ ] stage   SPACE frame   ESC menu" % [
-		_index + 1, UMK3StageList.STAGES.size(),
-		UMK3StageList.pretty(stem), _frame]
+	_hud.text = _hud_text()
+	if _audio and _fight_mode:
+		_audio.music(UMK3StageList.MUSIC[_index])
 	_update_cam()
+
+
+func _hud_text() -> String:
+	var stem: String = UMK3StageList.STAGES[_index]
+	var head := "%d/%d  %s   frame %d   build %s\n" % [
+		_index + 1, UMK3StageList.STAGES.size(),
+		UMK3StageList.pretty(stem), _frame, BUILD]
+	if _fight_mode and _fight != null:
+		return head \
+			+ "WASD move/jump/duck   U I O J K L  hi/lo punch, block, hi/lo kick, run\n" \
+			+ "[ ] stage   V viewer   F5 reset   ESC menu\n" \
+			+ _fight.status()
+	return head + "[ ] stage   SPACE frame   V fight   ESC menu"
 
 
 func _update_cam() -> void:
 	if _cam == null:
+		return
+	# In fight mode the camera belongs to the fight: it frames the two
+	# fighters, and an orbit written over it would be undone next frame.
+	if _fight_mode and _fight != null:
 		return
 	var b := Basis.from_euler(Vector3(_pitch, _yaw, 0.0))
 	_cam.transform = Transform3D(b, _focus + b * Vector3(0, 0, _dist))
@@ -161,6 +268,11 @@ func _update_cam() -> void:
 
 func _leave_stage() -> void:
 	_in_stage = false
+	if _fight:
+		# Kept, not freed: the menu is in front of it and coming back should not
+		# reload a character that takes a second to skin.
+		_fight.enabled = false
+		_fight.visible = false
 	if _stage:
 		_stage.queue_free()
 		_stage = null
@@ -186,6 +298,15 @@ func _unhandled_input(e: InputEvent) -> void:
 	elif e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
 			KEY_ESCAPE:       _leave_stage()
+			KEY_V:
+				_fight_mode = not _fight_mode
+				_ensure_fight()
+				if not _fight_mode:
+					_update_cam()
+				_hud.text = _hud_text()
+			KEY_F5:
+				if _fight:
+					_fight.reset()
 			KEY_BRACKETLEFT:  _index = wrapi(_index - 1, 0, UMK3StageList.STAGES.size()); _frame = 0; _load_stage()
 			KEY_BRACKETRIGHT: _index = wrapi(_index + 1, 0, UMK3StageList.STAGES.size()); _frame = 0; _load_stage()
 			KEY_SPACE:

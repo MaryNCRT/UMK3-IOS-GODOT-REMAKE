@@ -37,9 +37,14 @@ enum Screen { TITLE, MAIN, STAGES }
 var res_dir := ""
 var textures = null
 
+## Which of the two things the stage list was opened for: a fight, or the free
+## camera. The shell reads it when the stage loads.
+var viewer_mode := false
+
 var _screen := Screen.TITLE
 var _bg := TextureRect.new()
 var _logo := TextureRect.new()
+var _scroll := ScrollContainer.new()
 var _rows := VBoxContainer.new()
 var _hint := Label.new()
 
@@ -65,9 +70,18 @@ func _ready() -> void:
 	_logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	add_child(_logo)
 
+	# **Anchored, not hand-placed.** The first version positioned and scaled the
+	# button column by hand off a 1024x768 art size; eleven stage buttons then
+	# ran off the bottom of the window at any size. A ScrollContainer between
+	# anchors is the thing that cannot do that.
+	_scroll.set_anchors_preset(Control.PRESET_CENTER)
+	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	add_child(_scroll)
+
 	_rows.alignment = BoxContainer.ALIGNMENT_CENTER
-	_rows.add_theme_constant_override("separation", 10)
-	add_child(_rows)
+	_rows.add_theme_constant_override("separation", 8)
+	_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_scroll.add_child(_rows)
 
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hint.add_theme_font_size_override("font_size", 22)
@@ -90,19 +104,41 @@ func _art_scale() -> float:
 
 func _layout() -> void:
 	var vp := get_viewport_rect().size
+
+	# **This Control hangs off a plain Node, so anchors give it nothing.**
+	# PRESET_FULL_RECT only fills a parent that has a size, and a Node has
+	# none -- which left this at 0x0 and the background invisible while every
+	# child still drew. Set it explicitly rather than rely on the preset.
+	position = Vector2.ZERO
+	size = vp
+	_bg.position = Vector2.ZERO
+	_bg.size = vp
+
 	var s := _art_scale()
 	var org := (vp - ART * s) * 0.5
 
-	_logo.position = org + Vector2(0.0, 40.0) * s
-	_logo.size = Vector2(ART.x, 300.0) * s
+	# The logo keeps its place in the art; everything else is laid out against
+	# the WINDOW, so it cannot leave it.
+	var logo_h := 240.0 * s
+	_logo.position = Vector2(org.x, org.y + 30.0 * s)
+	_logo.size = Vector2(ART.x * s, logo_h)
+	var top := _logo.position.y + logo_h
 
-	_rows.position = org + Vector2(ART.x * 0.5 - 190.0, 380.0) * s
-	_rows.size = Vector2(380.0, 300.0) * s
-	_rows.scale = Vector2(s, s)
-	_rows.position = org + Vector2(ART.x * 0.5 - 190.0 * s, 380.0 * s)
+	var hint_h := 34.0 * s
+	_hint.position = Vector2(0.0, vp.y - hint_h - 12.0 * s)
+	_hint.size = Vector2(vp.x, hint_h)
+	_hint.add_theme_font_size_override("font_size", int(maxf(14.0, 20.0 * s)))
 
-	_hint.position = org + Vector2(0.0, 690.0) * s
-	_hint.size = Vector2(ART.x * s, 40.0 * s)
+	# Whatever is left between the logo and the hint, with a margin, and never
+	# taller than the buttons actually need.
+	var avail := maxf(_hint.position.y - top - 20.0 * s, 80.0)
+	var want := _rows.get_combined_minimum_size().y
+	var h := minf(avail, maxf(want, 60.0))
+	var w := minf(vp.x * 0.7, 460.0 * s)
+
+	_scroll.position = Vector2((vp.x - w) * 0.5, top + 10.0 * s)
+	_scroll.size = Vector2(w, h)
+	_rows.custom_minimum_size.x = w
 
 
 func _tex(stem: String) -> Texture2D:
@@ -111,15 +147,44 @@ func _tex(stem: String) -> Texture2D:
 	return textures.get_texture(stem + ".???")
 
 
+## A full-screen sheet, cropped to the part that is actually art.
+##
+## These are authored at 1024x768 and stored in a 1024x1024 power-of-two
+## texture; the strip below is padding, black in some sheets and magenta in
+## others. Drawing the whole texture stretches that padding across the bottom
+## of the window, which is what the first version did.
+func _sheet(stem: String) -> Texture2D:
+	var src := _tex(stem)
+	if src == null:
+		return null
+	var h: int = mini(int(ART.y), src.get_height())
+	if src.get_height() <= h:
+		return src
+	var at := AtlasTexture.new()
+	at.atlas = src
+	at.region = Rect2(0, 0, src.get_width(), h)
+	return at
+
+
 ## A button on the game's own torn-paper plate.
 func _button(text: String, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(380, 54)
-	b.add_theme_font_size_override("font_size", 26)
-	b.add_theme_color_override("font_color", Color(0.10, 0.09, 0.08))
-	b.add_theme_color_override("font_hover_color", Color(0.55, 0.05, 0.05))
-	b.add_theme_color_override("font_pressed_color", Color(0.8, 0.1, 0.1))
+	# Sized from the window, not from a constant, so eleven of them still fit
+	# on a small one.
+	var s := _art_scale()
+	b.custom_minimum_size = Vector2(0, maxf(34.0, 48.0 * s))
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.add_theme_font_size_override("font_size", int(maxf(15.0, 24.0 * s)))
+	# White with a hard black outline, which stays readable whatever the plate
+	# behind it turns out to be. The atlas has no manifest, so the plate region
+	# below is measured off the decoded sheet by eye and could be off by a few
+	# texels; the text must not depend on that.
+	b.add_theme_color_override("font_color", Color(0.93, 0.90, 0.84))
+	b.add_theme_color_override("font_hover_color", Color(1.0, 0.85, 0.25))
+	b.add_theme_color_override("font_pressed_color", Color(1.0, 0.55, 0.1))
+	b.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.95))
+	b.add_theme_constant_override("outline_size", 5)
 
 	var plate := _tex("FE_BUTTONS_01")
 	if plate:
@@ -128,10 +193,13 @@ func _button(text: String, cb: Callable) -> Button:
 		# atlas has no manifest.
 		var at := AtlasTexture.new()
 		at.atlas = plate
-		at.region = Rect2(8, 6, 410, 86)
+		at.region = Rect2(10, 8, 405, 88)
 		var sb := StyleBoxTexture.new()
 		sb.texture = at
-		sb.set_texture_margin_all(10)
+		sb.set_texture_margin_all(12)
+		# The plates are white art; without this they inherit whatever the
+		# theme last set and come out muddy.
+		sb.modulate_color = Color(0.72, 0.70, 0.66)
 		b.add_theme_stylebox_override("normal", sb)
 		b.add_theme_stylebox_override("hover", sb)
 		b.add_theme_stylebox_override("pressed", sb)
@@ -145,8 +213,8 @@ func _show_title() -> void:
 	_screen = Screen.TITLE
 	for c in _rows.get_children():
 		c.queue_free()
-	_bg.texture = _tex("FE_TITLE_BG")
-	_logo.texture = _tex("FE_MAINLOGO_EN")
+	_bg.texture = _sheet("FE_TITLE_BG")
+	_logo.texture = _sheet("FE_MAINLOGO_EN")
 	_logo.visible = true
 	_hint.text = "PRESS ANY KEY"
 	_layout()
@@ -156,25 +224,33 @@ func _show_main() -> void:
 	_screen = Screen.MAIN
 	for c in _rows.get_children():
 		c.queue_free()
-	_bg.texture = _tex("FE_MENU_PLAY")
-	_logo.texture = _tex("FE_MAINLOGO_EN")
+	_bg.texture = _sheet("FE_MENU_PLAY")
+	_logo.texture = _sheet("FE_MAINLOGO_EN")
 	_logo.visible = true
 	_hint.text = ""
 	await get_tree().process_frame
-	_button("STAGE VIEWER", _show_stages)
+	_button("FIGHT", func(): _show_stages(false))
+	_button("STAGE VIEWER", func(): _show_stages(true))
 	_button("BACK", _show_title)
 	_button("QUIT", func(): get_tree().quit())
 	_layout()
 
 
-func _show_stages() -> void:
+func _show_stages(viewer := false) -> void:
+	viewer_mode = viewer
 	_screen = Screen.STAGES
 	for c in _rows.get_children():
 		c.queue_free()
-	_bg.texture = _tex("FE_BG_MARBLE")
+	# FE_BG_MARBLE carries alpha -- it is an overlay, not a backdrop, and on
+	# its own it leaves a black screen. FE_MENU_PLAY is the opaque plate.
+	_bg.texture = _sheet("FE_MENU_PLAY")
 	_logo.visible = false
+	_logo.size = Vector2.ZERO
 	await get_tree().process_frame
-	_hint.text = "UP / DOWN to choose, ENTER to view, ESC back"
+	if viewer_mode:
+		_hint.text = "CHOOSE A STAGE TO EXPLORE   -   ESC BACK"
+	else:
+		_hint.text = "CHOOSE A STAGE TO FIGHT ON   -   ESC BACK"
 	for i in UMK3StageList.STAGES.size():
 		var stem: String = UMK3StageList.STAGES[i]
 		_button(UMK3StageList.pretty(stem), func(): play_stage.emit(stem))
@@ -194,3 +270,12 @@ func _unhandled_input(e: InputEvent) -> void:
 		Screen.STAGES:
 			if e is InputEventKey and e.keycode == KEY_ESCAPE:
 				_show_main()
+
+
+## Jump to a screen: 0 title, 1 main, 2 stage list. For checking the layout.
+func show_screen(n: int) -> void:
+	match n:
+		1: _show_main()
+		2: _show_stages()
+		3: _show_stages(true)
+		_: _show_title()

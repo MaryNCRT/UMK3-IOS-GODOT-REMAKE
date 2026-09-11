@@ -4,3 +4,14 @@
 dist/
 fe_dump/
 shot*.png
+
+# ==========================================================================
+# GAME DATA -- NEVER COMMITTED.
+#
+# `assets/` holds a character imported out of the user's own copy of the game:
+# meshes, a texture, animations. It lives in the project so the model can be
+# opened and worked on in the editor, and it is EA's, so it stays local. The
+# repository is code only -- the same rule the C project runs on, and the
+# reason either of them can be shown to anyone.
+# ==========================================================================
+assets/
