@@ -57,9 +57,14 @@ const OPAQUE_ALPHA := 0.97
 ## does, and the result reads as too much.
 ##
 ## So this is a knob, in the same spirit as `fill` in umk3_light.gd: an honest
-## label on a deliberate departure, rather than a quiet edit to the data. The
-## user asked for less fog; 1.0 is what the files say.
-static var opacity := 0.45
+## label on a deliberate departure, rather than a quiet edit to the data.
+##
+## **0.05, chosen by the user with F6/F7 against the running game.** That is a
+## twentieth of what the data says, and it is not an accident of scale: the
+## dense parts of the texture reach alpha 0.36, and seven bands of that stack to
+## `1-(1-a)^7`, so a twentieth per band still leaves the haze visible. 1.0 is
+## what the files say; this is what the game is played at.
+static var opacity := 0.05
 
 var events := _Events.new()
 var loaded := 0

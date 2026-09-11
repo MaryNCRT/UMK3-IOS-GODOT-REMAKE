@@ -15,7 +15,7 @@ const _Effects := preload("res://umk3/umk3_effects.gd")
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-11 15:30  fog on F6/F7"
+const BUILD := "2026-09-11 15:40  fog 0.05"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
