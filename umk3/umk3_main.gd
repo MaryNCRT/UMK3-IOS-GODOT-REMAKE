@@ -10,11 +10,12 @@ const _Stage := preload("res://umk3/umk3_stage.gd")
 const _Fight := preload("res://umk3/umk3_fight.gd")
 const _Fighter := preload("res://umk3/umk3_fighter.gd")
 const _Audio := preload("res://umk3/umk3_audio.gd")
+const _Effects := preload("res://umk3/umk3_effects.gd")
 
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-11 15:10  stage effects"
+const BUILD := "2026-09-11 15:30  fog on F6/F7"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -99,6 +100,7 @@ func _ready() -> void:
 			"--yaw":    _Fighter.yaw_right = float(args[i + 1])
 			"--wait":   _shot_at_want = int(args[i + 1])
 			"--stagelight": _stage_light = int(args[i + 1]) != 0
+			"--fog":    _Effects.opacity = float(args[i + 1])
 			"--shot":
 				_shot = args[i + 1]
 				set_process(true)
@@ -256,7 +258,8 @@ func _hud_text() -> String:
 	if _fight_mode and _fight != null:
 		return head \
 			+ "WASD move/jump/duck   U I O J K L  hi/lo punch, block, hi/lo kick, run\n" \
-			+ "[ ] stage   V viewer   F5 reset   ESC menu\n" \
+			+ ("[ ] stage   V viewer   F5 reset   F6/F7 fog %.2f   ESC menu\n"
+				% _Effects.opacity) \
 			+ _fight.status()
 	return head + "[ ] stage   SPACE frame   V fight   ESC menu"
 
@@ -313,6 +316,13 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_F5:
 				if _fight:
 					_fight.reset()
+			# The fog is a LOOK, and a look is dialled by eye rather than
+			# argued one screenshot at a time. These move it live, and the
+			# value is in the HUD so it can be reported back as a number.
+			KEY_F6:
+				_Effects.opacity = maxf(0.0, _Effects.opacity - 0.05)
+			KEY_F7:
+				_Effects.opacity = minf(1.0, _Effects.opacity + 0.05)
 			KEY_BRACKETLEFT:  _index = wrapi(_index - 1, 0, UMK3StageList.STAGES.size()); _frame = 0; _load_stage()
 			KEY_BRACKETRIGHT: _index = wrapi(_index + 1, 0, UMK3StageList.STAGES.size()); _frame = 0; _load_stage()
 			KEY_SPACE:

@@ -48,6 +48,19 @@ const EFFECT_HZ := 30.0
 ## not read from a literal.
 const OPAQUE_ALPHA := 0.97
 
+## A multiplier on every effect's alpha. **Viewer only, and not the engine's.**
+##
+## The game draws these at the alpha its own data carries -- GYMIST1's stream is
+## 1.000 on all 2,001 frames, and what makes the fog faint is the texture, whose
+## alpha channel runs 0 to 93 with a mean of 14. Reproducing that exactly gives
+## seven bands over a stage that this port also draws darker than the original
+## does, and the result reads as too much.
+##
+## So this is a knob, in the same spirit as `fill` in umk3_light.gd: an honest
+## label on a deliberate departure, rather than a quiet edit to the data. The
+## user asked for less fog; 1.0 is what the files say.
+static var opacity := 0.45
+
 var events := _Events.new()
 var loaded := 0
 var error := ""
@@ -195,7 +208,7 @@ func _apply(frame: int) -> void:
 		var mat: StandardMaterial3D = p["mat"]
 		if mat != null:
 			mat.albedo_color = Color(1.0, 1.0, 1.0,
-				sc.nodes[p["index"]].alpha[f])
+				sc.nodes[p["index"]].alpha[f] * opacity)
 
 
 ## Which of the engine's three paths this node is drawn on, decided ONCE from
