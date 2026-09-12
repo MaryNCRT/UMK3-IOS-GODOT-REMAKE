@@ -255,7 +255,10 @@ func _wins(r: Rect2, n: int, mirrored: bool, s: float) -> void:
 		return
 	var d := COIN * s
 	var runw := r.size.x / (BAR_W / RUN_W)
-	var y := r.position.y - (d - RUN_H * s) * 0.5
+	# **Top-aligned with the run meter, not centred on it.** An 18-unit token
+	# centred on an 8-unit bar pokes five units up into the life bar above and
+	# covers its bottom border, which is exactly what it was doing.
+	var y := r.position.y
 	for i in mini(n, 2):
 		var off := (COIN_GAP + float(i) * COIN_STEP) * s
 		var x := r.position.x + runw + off

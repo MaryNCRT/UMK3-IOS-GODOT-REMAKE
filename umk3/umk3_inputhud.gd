@@ -96,7 +96,8 @@ func _draw() -> void:
 
 	var w := 208.0
 	var x := vp.x - w - 10.0
-	var y := 96.0
+	# Clear of the bars and the round tokens under them.
+	var y := 132.0
 	# If the bars and the panel together are taller than the window -- a short
 	# window, or one resized to a strip -- the panel comes up rather than off.
 	if y + h > vp.y - 6.0:

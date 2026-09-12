@@ -303,8 +303,10 @@ func _enter_stage(stem: String) -> void:
 		_hud = Label.new()
 		_hud.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 		_hud.grow_vertical = Control.GROW_DIRECTION_BEGIN
-		_hud.position = Vector2(12, -142)
-		_hud.add_theme_font_size_override("font_size", 16)
+		# Small, and hard against the bottom edge. It is a read-out, not part
+		# of the game's own screen, and it should look like one.
+		_hud.position = Vector2(10, -92)
+		_hud.add_theme_font_size_override("font_size", 12)
 		_hud.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
 		_hud.add_theme_constant_override("shadow_offset_y", 2)
 		add_child(_hud)
