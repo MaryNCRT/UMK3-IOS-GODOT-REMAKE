@@ -19,7 +19,7 @@ const _InputCfg := preload("res://umk3/umk3_input.gd")
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-11 21:00  specials, input panel, metres"
+const BUILD := "2026-09-12 08:00  block held 1:1, device choice, start pauses"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -37,6 +37,8 @@ var _pause: Control
 ## `--menu 1` opens the pause menu on the first frame, which is how it is
 ## photographed without a hand on the keyboard.
 var _open_menu := 0
+## The pad's Start button, last frame, so a held button pauses once.
+var _start_held := false
 ## The bindings, shared by the fight, the panel and the pause menu --
 ## **one object, so a rebind cannot reach one of them and miss another.**
 var _input = null
@@ -62,6 +64,9 @@ var _index := 0
 var _frame := 0
 var _in_stage := false
 var _drive := -1
+## The same for player two. Two of them is what lets a hit be tested against a
+## block without a second pair of hands.
+var _drive2 := -1
 ## `--seq 4,0,4,0,32` plays one input word per tick, for testing a notation.
 var _seq := ""
 var _pose := -1
@@ -120,6 +125,7 @@ func _ready() -> void:
 			"--stage":  want_stage = int(args[i + 1])
 			"--screen": want_screen = int(args[i + 1])
 			"--drive":  _drive = int(args[i + 1])
+			"--drive2": _drive2 = int(args[i + 1])
 			"--seq":    _seq = args[i + 1]
 			"--pose":   _pose = int(args[i + 1])
 			"--yaw":    _Fighter.yaw_right = float(args[i + 1])
@@ -158,6 +164,7 @@ func _process(_dt: float) -> void:
 	# and the panel and the menu follow it without being told.
 	if _input:
 		_input.detect()
+		_pad_start()
 	if _open_menu > 0 and _pause and _in_stage:
 		if _open_menu > 1:
 			_pause.page = 1               # straight to the controls page
@@ -194,6 +201,32 @@ func _process(_dt: float) -> void:
 			print("[umk3] " + line)
 	print("[umk3] wrote " + _shot)
 	get_tree().quit()
+
+
+## **Start pauses.** Either player's pad, edge detected, and it goes through
+## the same toggle Escape does -- so a pad can open the menu, work it and close
+## it without ever touching the keyboard.
+##
+## Polled rather than taken as an event because the tree is PAUSED while the
+## menu is up, and this node is one of the two that keeps running.
+func _pad_start() -> void:
+	var down := false
+	for p in 2:
+		var d: int = int(_input.device[p])
+		if d >= 0 and Input.is_joy_button_pressed(d, JOY_BUTTON_START):
+			down = true
+	if down and not _start_held:
+		_toggle_pause()
+	_start_held = down
+
+
+func _toggle_pause() -> void:
+	if _pause == null or not _in_stage or not _fight_mode:
+		return
+	if _pause.visible:
+		_pause.close()
+	else:
+		_pause.open()
 
 
 func _enter_stage(stem: String) -> void:
@@ -284,6 +317,8 @@ func _ensure_fight() -> void:
 	_fight.visible = _fight_mode
 	if _drive >= 0:
 		_fight.forced[0] = _drive
+	if _drive2 >= 0:
+		_fight.forced[1] = _drive2
 	if _seq != "":
 		for s in _seq.split(","):
 			_fight.forced_seq.append(int(s))
@@ -399,10 +434,7 @@ func _unhandled_input(e: InputEvent) -> void:
 		# **Escape opens the pause menu now** rather than dropping the stage;
 		# quitting to the menu is an item inside it.
 		if e.keycode == KEY_ESCAPE and _pause and _fight_mode:
-			if _pause.visible:
-				_pause.close()
-			else:
-				_pause.open()
+			_toggle_pause()
 			return
 		match e.keycode:
 			KEY_ESCAPE:       _leave_stage()

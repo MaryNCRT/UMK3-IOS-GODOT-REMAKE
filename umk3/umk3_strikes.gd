@@ -101,6 +101,38 @@ const STK := [
 	[206, 36, 106, 90, 0, 1, 120],     # 26  ermac_slam      -> t_r_ermac_slam
 ]
 
+## **The block half of every record, which this port did not have at all.**
+##
+## `strike_check_regs` splits word 4 into TWO bytes and word 5 into two more:
+##
+##     word4 >> 8   the reaction, into `_reaction_table`      (121 procs)
+##     word4 & 0xff the BLOCK reaction, into `_block_xfers`   (24 procs)
+##     word5 >> 8   the damage a clean hit does
+##     word5 & 0xff the CHIP damage a blocked hit still does
+##
+## I had read the low byte of word 4 as "flags" and never read the low byte of
+## word 5 at all. They are neither: 0x1805 on the high kick is block reaction 6
+## and five points of chip.
+const CHIP := [5, 4, 3, 2, 3, 2, 3, 2, 9, 5, 6, 7, 5, 4, 3, 3,
+	3, 2, 4, 0, 2, 0, 3, 4, 0, 3, 0]
+
+## Which of the 24 `_block_xfers` procs the victim goes into when he blocks it.
+const BLOCK_IDX := [6, 6, 17, 23, 3, 10, 11, 10, 2, 1, 1, 1, 1, 1, 7, 7,
+	0, 1, 1, 5, 0, 0, 0, 0, 22, 1, 1]
+
+## Which of the two block noises that proc makes: `rsnd_func(pl, 5)` is
+## `_tab_rsnd_big_block` and `rsnd_func(pl, 6)` is `_tab_rsnd_small_block`,
+## read off the first call in each of the 24 procs. Eleven of them make no
+## noise of their own at all, and that silence is the measurement too.
+const BLOCK_BIG := [1, 2, 6, 7, 11, 15, 18]
+const BLOCK_SMALL := [0, 3, 10, 16, 17, 23]
+
+## `is_he_blocking` (0x0005837c) tests the LEVEL against this, and nothing
+## else: `if (level & 2) he is not blocking` -- unless he is holding down, in
+## which case he is duck-blocking and it is stopped anyway. The sweep is the
+## only record in the table with the bit set.
+const LVL_LOW := 2
+
 ## **How hard each reaction pushes the victim back, measured.**
 ##
 ## The fifth word of a strike record is `(reaction << 8) | flags`, and the

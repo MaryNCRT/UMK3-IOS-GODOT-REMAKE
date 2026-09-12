@@ -59,14 +59,79 @@ const DEFAULT_PAD := [
 	JOY_BUTTON_LEFT_SHOULDER,         # run          L1
 ]
 
+## The sentinel `pref` value for "keyboard only".
+const KB := "kb"
+
+## **A pad binding above this is an AXIS, not a button.**
+##
+## Windows drives Xbox-compatible pads through XInput, and XInput does not
+## report the triggers as buttons at all -- they are analogue axes, so
+## `InputEventJoypadButton` never fires for LT or RT and a menu that only
+## listens for buttons cannot bind them. Godot sends them as
+## `InputEventJoypadMotion` on JOY_AXIS_TRIGGER_LEFT and _RIGHT instead.
+##
+## So an axis is encodable as a binding: AXIS + axis * 2 + (1 if the useful
+## direction is positive). That covers the sticks as well, which is the same
+## problem one layer up.
+const AXIS := 1000
+## How far an axis has to move to count as pressed. The triggers rest at 0.
+const AXIS_ON := 0.5
+
+
+## **What identifies a pad across a restart.**
+##
+## `get_joy_guid` is the right answer for anything on the SDL path -- a
+## DualSense, a DualShock, a Pro Controller -- but on Windows every
+## Xbox-compatible pad comes through XInput and Godot reports the GUID
+## `__XINPUT_DEVICE__` for ALL of them. Two Xbox pads would be the same string
+## and a saved choice would be meaningless.
+##
+## `get_joy_info` carries `xinput_index` for exactly those, which is the slot
+## the driver gave it and is stable while it stays plugged into the same port.
+## That is the best identity available; the name is the last resort.
+static func ident(d: int) -> String:
+	var g := Input.get_joy_guid(d)
+	if g != "" and g != "__XINPUT_DEVICE__":
+		return g
+	var info := Input.get_joy_info(d)
+	if info.has("xinput_index"):
+		return "xinput:%d" % int(info["xinput_index"])
+	return "pad:%s" % Input.get_joy_name(d)
+
+
+## Is one binding down on one pad? Buttons and axes, by the same code.
+static func pad_down(dev: int, code: int) -> bool:
+	if code < 0:
+		return false
+	if code < AXIS:
+		return Input.is_joy_button_pressed(dev, code)
+	@warning_ignore("integer_division")
+	var ax := (code - AXIS) / 2
+	var positive := (code - AXIS) % 2 == 1
+	var v := Input.get_joy_axis(dev, ax)
+	return v > AXIS_ON if positive else v < -AXIS_ON
+
 ## The stick counts as the d-pad past this much deflection.
 const DEADZONE := 0.5
 
 ## key[player][bit] and pad[player][bit].
 var keys: Array = []
 var pad: Array = []
-## Which physical pad each player uses, or -1 for none.
+## Which physical pad each player uses, or -1 for none. **Resolved every
+## frame** by `detect()`; never set by hand.
 var device := [-1, -1]
+
+## What each player has CHOSEN, which is a different question from what he
+## ended up with:
+##
+##     ""      automatic -- take whatever pad is going, in order
+##     "kb"    keyboard only, leave the pads to the other player
+##     a GUID  that model of pad and no other
+##
+## A GUID rather than an index because an index is whatever order the driver
+## enumerated in this boot, and the whole point of saving a choice is that it
+## survives the next one.
+var pref := ["", ""]
 
 
 func _init() -> void:
@@ -79,12 +144,78 @@ func reset() -> void:
 	pad = [DEFAULT_PAD.duplicate(), DEFAULT_PAD.duplicate()]
 
 
-## Hand out the connected pads: player one takes the first, player two the
-## second. Called every frame, so hot-plugging works without a menu.
+## Hand out the pads. Called every frame, so hot-plugging works without a menu.
+##
+## **A pad belongs to one player at a time.** Two people on one stick is not a
+## two-player game -- every press would arrive twice, once as each of them --
+## so a pad that is already taken is skipped rather than shared. The KEYBOARD
+## is not like that: it is always live for both, because the two default
+## layouts do not overlap and somebody has to be able to join in without
+## unplugging anything.
+##
+## Explicit choices are honoured first and the automatic players take what is
+## left, so choosing a pad for player two cannot be undone by player one
+## happening to be enumerated first.
 func detect() -> void:
-	var found := Input.get_connected_joypads()
+	var pads := Input.get_connected_joypads()
+	var taken := {}
 	for i in 2:
-		device[i] = int(found[i]) if i < found.size() else -1
+		device[i] = -1
+	for i in 2:
+		if pref[i] == "" or pref[i] == KB:
+			continue
+		for d in pads:
+			if not taken.has(d) and ident(int(d)) == pref[i]:
+				device[i] = int(d)
+				taken[d] = true
+				break
+	for i in 2:
+		if pref[i] != "":
+			continue
+		for d in pads:
+			if not taken.has(d):
+				device[i] = int(d)
+				taken[d] = true
+				break
+
+
+## The choices a player can be offered, in the order the menu cycles them:
+## automatic, keyboard only, then one entry per connected pad.
+func choices() -> Array:
+	var out := ["", KB]
+	for d in Input.get_connected_joypads():
+		out.append(ident(int(d)))
+	return out
+
+
+## What to print for one of those choices.
+func choice_name(which: String) -> String:
+	if which == "":
+		return "automatic"
+	if which == KB:
+		return "keyboard only"
+	for d in Input.get_connected_joypads():
+		if ident(int(d)) == which:
+			return Input.get_joy_name(int(d))
+	return "pad not connected"
+
+
+## Move one player to the next choice, refusing to land on the pad the other
+## player has explicitly claimed.
+func cycle(player: int, step: int) -> void:
+	var list := choices()
+	var at := list.find(pref[player])
+	if at < 0:
+		at = 0
+	for _i in list.size():
+		at = posmod(at + step, list.size())
+		var want: String = str(list[at])
+		if want != "" and want != KB and want == pref[1 - player]:
+			continue
+		pref[player] = want
+		break
+	detect()
+	save_cfg()
 
 
 ## The ten-bit word for one player. **This is the only place a key or a button
@@ -100,7 +231,7 @@ func read(player: int) -> int:
 	if dev < 0:
 		return w
 	for i in N:
-		if int(b[i]) >= 0 and Input.is_joy_button_pressed(dev, int(b[i])):
+		if pad_down(dev, int(b[i])):
 			w |= 1 << i
 	# The left stick doubles for the d-pad, which every fighting game does and
 	# no menu should have to explain.
@@ -141,6 +272,7 @@ func save_cfg() -> void:
 		for i in N:
 			c.set_value("keys%d" % p, BITS[i], int(keys[p][i]))
 			c.set_value("pad%d" % p, BITS[i], int(pad[p][i]))
+		c.set_value("device", "p%d" % p, str(pref[p]))
 	c.save(CFG)
 
 
@@ -152,3 +284,4 @@ func load_cfg() -> void:
 		for i in N:
 			keys[p][i] = int(c.get_value("keys%d" % p, BITS[i], keys[p][i]))
 			pad[p][i] = int(c.get_value("pad%d" % p, BITS[i], pad[p][i]))
+		pref[p] = str(c.get_value("device", "p%d" % p, pref[p]))

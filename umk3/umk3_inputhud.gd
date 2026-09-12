@@ -52,67 +52,102 @@ func set_state(bits: int, special: String) -> void:
 	queue_redraw()
 
 
+## **The panel measures itself before it draws.**
+##
+## What was here put the background at a fixed 368 high and then drew however
+## many rows there were, so the last two lines fell out of the bottom of it and
+## sat on the stage -- which is what it looked like when the window was made
+## bigger, because a bigger window means a taller viewport and a panel pinned
+## to the top does not grow with it.
+##
+## So: lay it out into a list first, ask how tall that came to, paint the box,
+## and then paint the list into it. It cannot overflow because the box is
+## measured from the thing that goes inside it, and it is clamped into the
+## viewport so it cannot hang off an edge either.
 func _draw() -> void:
 	var vp := get_viewport_rect().size
-	var w := 208.0
-	var x := vp.x - w - 10.0
-	var y := 96.0
 	var font := ThemeDB.fallback_font
 	var fs := _font_size
-
-	# The panel, dark enough to read over a stage but not a wall.
-	draw_rect(Rect2(x, y, w, 368), Color(0, 0, 0, 0.55), true)
-	draw_rect(Rect2(x, y, w, 368), Color(1, 1, 1, 0.15), false, 1.0)
 
 	var kind := "kb"
 	var on_pad := false
 	if input:
 		kind = input.pad_kind(player)
 		on_pad = input.device[player] >= 0
+
+	# --- lay out -----------------------------------------------------------
+	# Each entry is [kind, y, payload]. Nothing is painted yet.
+	var rows: Array = []
+	var h := 28.0
+	for i in _Input.N:
+		rows.append(["bit", h, i])
+		h += 21.0
+	h += 8.0
+	rows.append(["head", h, "SPECIALS"])
+	h += 16.0
+	for sp in _Moves.SPECIALS:
+		rows.append(["special", h, sp])
+		h += 32.0
+	h += 2.0
+	rows.append(["note", h, "<- is AWAY from the opponent"])
+	h += 15.0
+	rows.append(["note", h, "ESC or START  pause and controls"])
+	h += 12.0
+
+	var w := 208.0
+	var x := vp.x - w - 10.0
+	var y := 96.0
+	# If the bars and the panel together are taller than the window -- a short
+	# window, or one resized to a strip -- the panel comes up rather than off.
+	if y + h > vp.y - 6.0:
+		y = maxf(6.0, vp.y - 6.0 - h)
+
+	# --- paint -------------------------------------------------------------
+	draw_rect(Rect2(x, y, w, h), Color(0, 0, 0, 0.55), true)
+	draw_rect(Rect2(x, y, w, h), Color(1, 1, 1, 0.15), false, 1.0)
 	draw_string(font, Vector2(x + 10, y + 18), "P%d INPUT" % (player + 1),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1, 0.85, 0.2))
 	if on_pad:
 		draw_string(font, Vector2(x + w - 48, y + 18), kind.to_upper(),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 2, Color(0.5, 0.8, 1.0))
 
-	# Ten lamps, in the engine's bit order, each with what produces it.
-	var ly := y + 28.0
-	for i in _Input.N:
-		var on := (raw & (1 << i)) != 0
-		var row := Rect2(x + 8, ly, w - 16, 20)
-		if on:
-			draw_rect(row, Color(0.15, 0.6, 0.25, 0.9), true)
-		draw_string(font, Vector2(x + 13, ly + 14), _Input.BITS[i],
-			HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
-			Color(1, 1, 1) if on else Color(0.55, 0.55, 0.55))
-		if input:
-			_binding(font, Vector2(x + w - 64, ly), i, kind, on_pad, on, fs)
-		ly += 21.0
-
-	# The specials, in the game's own notation.
-	ly += 8.0
-	draw_string(font, Vector2(x + 10, ly), "SPECIALS",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1, 0.85, 0.2))
-	ly += 16.0
-	for sp in _Moves.SPECIALS:
-		var hot: bool = _flash > 0 and sp["name"] == last_special
-		draw_string(font, Vector2(x + 10, ly), sp["name"],
-			HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 1,
-			Color(0.3, 1.0, 0.4) if hot else Color(0.85, 0.85, 0.85))
-		ly += 14.0
-		draw_string(font, Vector2(x + 16, ly), _Moves.notation(sp["row"]),
-			HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 1,
-			Color(1, 0.9, 0.4) if hot else Color(0.6, 0.6, 0.6))
-		ly += 18.0
-
-	# Back and forward are relative to who you are facing, which is the one
-	# thing a notation never says out loud.
-	draw_string(font, Vector2(x + 10, ly + 2),
-		"<- is AWAY from the opponent", HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 2,
-		Color(0.55, 0.55, 0.6))
-	draw_string(font, Vector2(x + 10, ly + 17),
-		"ESC  pause and controls", HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 2,
-		Color(0.45, 0.45, 0.5))
+	for r in rows:
+		var ry: float = y + float(r[1])
+		match str(r[0]):
+			"bit":
+				# The ten lamps, in the ENGINE's bit order, each with what
+				# produces it. An input that does not light here never reached
+				# the state machine.
+				var i: int = int(r[2])
+				var on := (raw & (1 << i)) != 0
+				if on:
+					draw_rect(Rect2(x + 8, ry, w - 16, 20),
+						Color(0.15, 0.6, 0.25, 0.9), true)
+				draw_string(font, Vector2(x + 13, ry + 14), _Input.BITS[i],
+					HORIZONTAL_ALIGNMENT_LEFT, -1, fs,
+					Color(1, 1, 1) if on else Color(0.55, 0.55, 0.55))
+				if input:
+					_binding(font, Vector2(x + w - 64, ry), i, kind, on_pad,
+						on, fs)
+			"head":
+				draw_string(font, Vector2(x + 10, ry), str(r[2]),
+					HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1, 0.85, 0.2))
+			"special":
+				var sp: Dictionary = r[2]
+				var hot: bool = _flash > 0 and sp["name"] == last_special
+				draw_string(font, Vector2(x + 10, ry), sp["name"],
+					HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 1,
+					Color(0.3, 1.0, 0.4) if hot else Color(0.85, 0.85, 0.85))
+				draw_string(font, Vector2(x + 16, ry + 14),
+					_Moves.notation(sp["row"]),
+					HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 1,
+					Color(1, 0.9, 0.4) if hot else Color(0.6, 0.6, 0.6))
+			"note":
+				# Back and forward are relative to who you are facing, which is
+				# the one thing a notation never says out loud.
+				draw_string(font, Vector2(x + 10, ry), str(r[2]),
+					HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 2,
+					Color(0.55, 0.55, 0.6))
 
 
 ## The key, and the pad button beside it when a pad is connected.

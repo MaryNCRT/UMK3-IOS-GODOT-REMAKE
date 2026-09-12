@@ -115,6 +115,8 @@ const GRP_KLANG := ["Robball2", "Robball1"]                       # @0017a1a4
 
 ## **`_tab_rsnd_*`, by the index `rsnd_func` takes.** Empty where the group is
 ## real but this build never plays it.
+const _Stk := preload("res://umk3/umk3_strikes.gd")
+
 const RSND := {
 	3: GRP_STAB,
 	4: GRP_FOOT,
@@ -351,14 +353,28 @@ func hit_react(reaction: int) -> void:
 	group_voice(2)
 
 
-## A blocked hit: `t_b_hard` and `t_b_uppercut` take 5, `t_b_punch` and
-## `t_b_weak` take 6. Which of the two a given reaction belongs to is the one
-## inference left here, and it is drawn the obvious way -- the heavy impacts
-## block heavily.
-func block_react(reaction: int) -> void:
-	var s: int = int(REACT_SND.get(reaction, SND_SMACK))
-	rsnd(SND_BIG_BLOCK if s == SND_BIG_SMACK or s == SND_MED_SMACK
-		else SND_SMALL_BLOCK, 0.7)
+## **A blocked hit, and the inference is gone.**
+##
+## The low byte of the strike record's fifth word indexes `_block_xfers`
+## (0x001671d8), 24 procs, and the first thing each one does -- or does not do
+## -- is call `rsnd_func`. Read off all 24:
+##
+##     5 big_block     t_b_hard, t_b_uppercut, t_b_hard_ken_masters,
+##                     t_b_duck_hit_hard, t_b_combo, t_b_combo_hard,
+##                     and t_b_knee_elbow through its tail into t_b_combo
+##     6 small_block   t_b_weak, t_b_sweep, t_b_duck_hit_soft,
+##                     t_b_weak_no_masters, t_b_punch, t_b_lo_punch
+##     nothing         the other eleven, and the silence is measured too
+##
+## So the ninja set lands as: high kick and low kick big, jab and low punch
+## small, sweep small, uppercut big, the jumps and the roundhouse big, knee and
+## elbow big, the duck punch small and the duck high kick big. This used to be
+## guessed off the impact sound and had several of them backwards.
+func block_hit(block_idx: int) -> void:
+	if _Stk.BLOCK_BIG.has(block_idx):
+		rsnd(SND_BIG_BLOCK, 0.7)
+	elif _Stk.BLOCK_SMALL.has(block_idx):
+		rsnd(SND_SMALL_BLOCK, 0.7)
 
 
 func block() -> void:

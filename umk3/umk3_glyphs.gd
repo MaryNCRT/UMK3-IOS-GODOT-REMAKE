@@ -21,6 +21,8 @@
 class_name UMK3Glyphs
 extends RefCounted
 
+const _Input := preload("res://umk3/umk3_input.gd")
+
 const DIR := "res://assets/controls"
 
 ## Godot key -> the middle of the keyboard file name. Only the keys a fighting
@@ -99,6 +101,19 @@ func key(code: int) -> Texture2D:
 func button(kind: String, code: int) -> Texture2D:
 	if not PAD_FILE.has(kind):
 		return null
+	if code >= _Input.AXIS:
+		# The trigger pictures are in every pack under their own names; the
+		# sticks fall back to text, which reads better than a stick drawing
+		# that cannot show a direction.
+		@warning_ignore("integer_division")
+		var ax := (code - _Input.AXIS) / 2
+		if ax == JOY_AXIS_TRIGGER_LEFT:
+			return _load("%s/%s%s_Alt.png" % [kind, PREFIX[kind],
+				"L2" if kind == "ps5" or kind == "ps4" else "LT"])
+		if ax == JOY_AXIS_TRIGGER_RIGHT:
+			return _load("%s/%s%s_Alt.png" % [kind, PREFIX[kind],
+				"R2" if kind == "ps5" or kind == "ps4" else "RT"])
+		return null
 	var m: Dictionary = PAD_FILE[kind]
 	if not m.has(code):
 		return null
@@ -115,6 +130,20 @@ static func key_name(code: int) -> String:
 static func button_name(code: int) -> String:
 	if code < 0:
 		return "--"
+	# An axis binding, which on Windows is the only way to reach a trigger:
+	# XInput reports LT and RT as analogue and never as buttons.
+	if code >= _Input.AXIS:
+		@warning_ignore("integer_division")
+		var ax := (code - _Input.AXIS) / 2
+		var pos := (code - _Input.AXIS) % 2 == 1
+		match ax:
+			JOY_AXIS_TRIGGER_LEFT:  return "LT"
+			JOY_AXIS_TRIGGER_RIGHT: return "RT"
+			JOY_AXIS_LEFT_X:        return "LS right" if pos else "LS left"
+			JOY_AXIS_LEFT_Y:        return "LS down" if pos else "LS up"
+			JOY_AXIS_RIGHT_X:       return "RS right" if pos else "RS left"
+			JOY_AXIS_RIGHT_Y:       return "RS down" if pos else "RS up"
+		return "AX%d%s" % [ax, "+" if pos else "-"]
 	match code:
 		JOY_BUTTON_A: return "A"
 		JOY_BUTTON_B: return "B"

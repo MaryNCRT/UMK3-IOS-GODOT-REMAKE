@@ -354,6 +354,7 @@ const ANI_WALK_B := 2
 const ANI_TURN := 3
 const ANI_DUCK := 4
 const ANI_DUCK_HIT := 7
+const ANI_DUCK_BLOCK := 6                ## SCDUCKBLOCK, `t_do_duck_block`
 const ANI_BLOCK := 12
 const ANI_VICTORY := 13
 const ANI_JUMP := 22
@@ -617,6 +618,31 @@ const MOVE_ANI := [
 ## This replaces a number chosen from the distribution of `init_anirate`
 ## literals across the whole binary. That distribution was a fair guess and it
 ## was a guess; 6 and the inheritance are what the code does.
+## **The block, measured end to end.**
+##
+## `t_do_block_hi` (0x0004cea0) is four lines: `stop_me_player`, animation
+## index 12 into `pl->0x40`, `get_char_ani`, and then the pair
+## `pl->0x1c = 3` / `pl->0x20 = 0x700` before it hands off to `t_act_mframew`.
+## The 3 is the anirate; the 0x700 is a TAG, and `is_he_blocking` (0x0005837c)
+## is what reads it back. `t_do_duck_block` (0x00030550) is the same function
+## with animation 6 and the tag 0x701.
+const RATE_BLOCK := 3
+
+## `t_do_unblock_hi` (0x0004d7a0) does not play a release clip -- there is no
+## such animation. It takes the block clip's LAST frame, steps back one
+## (`0x40 -= 4`), waits four, steps back one more (`0x44`), waits four, and
+## leaves. Two frames, backwards, four game frames each.
+const UNBLOCK_RATE := 4
+const UNBLOCK_FRAMES := 8
+
+## `t_block_shake` (0x00044750) loops `pl->0x44` times -- and `t_weak3` sets
+## that to 3, with `pl->0x48 = 2` frames a step. So a blocked hit is a
+## twelve-frame judder and the blocker does not move: the loop ends on
+## `stop_me_player`. **WHICH frames it jitters between is a reading**; the
+## count and the timing are not.
+const BLK_SHAKE_HOLD := 2
+const BLK_SHAKE := 12
+
 const RATE_STANCE := 6
 const RATE_RUN := 3
 
@@ -694,7 +720,7 @@ const GROUND_OFFSET := [
 ## dragged across the floor is something that happens over many frames and a
 ## reaction is over when its animation is.
 enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT, SPECIAL,
-	SPEARED, THROWN, FALLING, DOWN, GETUP, DEAD, VICTORY, STUNNED }
+	SPEARED, THROWN, FALLING, DOWN, GETUP, DEAD, VICTORY, STUNNED, UNBLOCK }
 
 ## The keyboard, the same map the C build uses: player one is the left hand
 ## plus U I O J K L, player two is the arrows and the numeric keypad.
@@ -735,7 +761,22 @@ class Fight extends RefCounted:
 	var ani_rate := 5
 	var ani_count := 1
 	var ani_index := 0
+	## Which way the frame index walks. The unblock is the only thing in the
+	## fight that plays a clip BACKWARDS, and it is what the engine does too.
+	var ani_dir := 1
 	var node = null
+
+	## The word this fighter's own player produced this tick, kept because
+	## `is_he_blocking` asks the JOYSTICK at the moment of the hit rather than
+	## asking what state he is in.
+	var raw := 0
+	## Blocking low. `is_he_blocking` reads the stick's down bit, not a state.
+	var blk_duck := false
+	## Frames left of the judder a blocked hit causes.
+	var blk_shake := 0
+	## `set_no_block` (0x00054f20): `part->0x30 |= 4`, and a man carrying it
+	## cannot guard however hard he holds the button. The spear's drag sets it.
+	var no_block := false
 
 	## The special-move input buffer, and which special is running.
 	var buf = _Moves.Buffer.new()
@@ -791,6 +832,7 @@ class Fight extends RefCounted:
 			ani_rate = rate
 		ani_count = 1
 		ani_index = 0
+		ani_dir = 1
 
 	## next_anirate: decrement, and on reaching zero reload and step the frame.
 	##
@@ -803,6 +845,11 @@ class Fight extends RefCounted:
 		if ani_count > 0:
 			return false
 		ani_count = ani_rate
+		if ani_dir < 0:
+			# The unblock walks down and stops at the first frame; the state's
+			# own timer is what ends it.
+			ani_index = maxi(0, ani_index - 1)
+			return true
 		if ani_index + 1 < count:
 			ani_index += 1
 		elif loops:
@@ -958,6 +1005,11 @@ func reset() -> void:
 		f.react = -1
 		f.collapsed = false
 		f.dying = false
+		f.ani_dir = 1
+		f.raw = 0
+		f.blk_duck = false
+		f.blk_shake = 0
+		f.no_block = false
 		f.sp_live = false
 		f.sp_stuck = false
 		f.sp_thrown = false
@@ -1054,22 +1106,29 @@ func _strike_id(f: Fight, dist: int, away: bool) -> int:
 
 ## The strike record for whatever this fighter is doing, or an empty array.
 func _strike_of(f: Fight, other: Fight = null) -> Array:
+	var id := _strike_now(f, other)
+	return [] if id < 0 else _Stk.STK[id]
+
+
+## The same question, answered as the strike ID. The block half of a record --
+## the chip damage and which of the 24 `_block_xfers` procs the victim goes
+## into -- is looked up by id, so the id has to survive the lookup.
+func _strike_now(f: Fight, other: Fight = null) -> int:
 	if f.st == St.SPECIAL:
 		# **The spear is not here.** `_stk_scorp_spear` belongs to the
 		# projectile, which is its own object with its own box -- see
 		# `_spear_box`.
 		if f.special == _Moves.SP_TELEPUNCH:
-			return _Stk.STK[_Stk.SCORP_TELE]
-		return []
+			return _Stk.SCORP_TELE
+		return -1
 	if f.st != St.ATTACK:
-		return []
+		return -1
 	var dist := 0
 	var away := false
 	if other != null:
 		dist = absi(other.xi() - f.xi())
 		away = f.stick_away
-	var id := _strike_id(f, dist, away)
-	return [] if id < 0 else _Stk.STK[id]
+	return _strike_id(f, dist, away)
 
 
 ## Where a strike's box sits in the world, as [x0, y0, x1, y1] in engine units
@@ -1164,6 +1223,55 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 
 	var vx := 0
 	match f.st:
+		St.BLOCK:
+			# **`t_joy_block_loop` (0x000301c4), state 0x283, every frame.**
+			# It reads the stick, then the block bit, and NOTHING here is
+			# edge triggered: the loop tail-calls itself for as long as
+			# `check_block_bit` keeps coming back non-zero.
+			#
+			# That is the bug this fixes. The block was being started off
+			# `_pressed_button`, which only fires on the frame a button goes
+			# DOWN, so a held block lasted two frames and could never be
+			# holding when a hit arrived.
+			f.vx = 0
+			if f.blk_shake > 0:
+				f.blk_shake -= 1
+			if f.no_block:
+				f.st = St.STANCE
+				f.table = BT_STANCE
+				return
+			if raw & IN_BL:
+				# Down while blocking is the duck block -- the loop hands off
+				# to `t_joy_down`, which lands on `t_do_duck_block` and its
+				# animation 6.
+				f.blk_duck = (raw & IN_DOWN) != 0
+				return
+			# Let go: `t_do_unblock_hi`, two frames of the clip backwards.
+			f.st = St.UNBLOCK
+			f.timer = UNBLOCK_FRAMES
+			f.timer_total = f.timer
+			f.blk_shake = 0
+			var clip := _stream(f.ani)
+			if not clip.is_empty():
+				f.ani_index = maxi(0, (clip[2] as Array).size() - 2)
+			f.ani_rate = UNBLOCK_RATE
+			f.ani_count = UNBLOCK_RATE
+			f.ani_dir = -1
+			return
+		St.UNBLOCK:
+			f.vx = 0
+			# The release can be interrupted by grabbing block again, which is
+			# what the loop's own state 0x28e path does.
+			if raw & IN_BL:
+				f.st = St.BLOCK
+				f.ani_dir = 1
+				f.ani_rate = RATE_BLOCK
+				return
+			if f.timer == 0:
+				f.st = St.STANCE
+				f.table = BT_STANCE
+				f.ani_dir = 1
+			return
 		St.HIT:
 			if f.timer == 0:
 				f.st = St.STANCE
@@ -1296,6 +1404,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			if f.timer == 0:
 				f.st = St.STANCE
 				f.table = BT_STANCE
+				f.no_block = false
 			return
 		St.JUMP:
 			# A jump keeps whatever horizontal velocity it started with and
@@ -1369,6 +1478,24 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 
 	var btn := _pressed_button(f, raw)
 
+	# **Block is a LEVEL.** `check_block_bit` (0x0002eca8) masks the translated
+	# joy word with 0x20 for player one and 0x2000 for player two -- the same
+	# button either way, since `TranslateJoybits` (0x00031a64) puts player
+	# two's bits eight places up -- and hands back whether it is down right
+	# now. No other button in the fight is read that way, and every one of the
+	# four places that asks about blocking asks through this function.
+	#
+	# So it is tested here, before the button table and before the stick: a
+	# held block outranks a walk, and `t_joy_block` opens by calling
+	# `disable_all_buttons` and `face_opponent`.
+	if raw & IN_BL:
+		f.st = St.BLOCK
+		f.blk_duck = (raw & IN_DOWN) != 0
+		f.table = BT_NULL
+		f.ani_dir = 1
+		f.vx = 0
+		return
+
 	if raw & IN_DOWN:
 		f.st = St.DUCK
 		f.table = BT_DUCK
@@ -1407,12 +1534,10 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		# `is_stick_away`, read once when the button goes down rather than
 		# every frame: which move this is, is decided at that moment.
 		f.stick_away = (raw & dir_b) != 0
-		if mv == MV_BLOCK or mv == MV_DUCK_BLOCK:
-			f.st = St.BLOCK
-			f.timer = 2
-			f.timer_total = 2
-			vx = 0
-		else:
+		# MV_BLOCK and MV_DUCK_BLOCK are still in the button tables because
+		# the ENGINE's tables have them there -- but the bit never reaches
+		# here, since the level test above has already claimed it.
+		if mv != MV_BLOCK and mv != MV_DUCK_BLOCK:
 			_start_attack(f, mv, absi(other.xi() - f.xi()))
 			vx = 0
 	f.vx = vx
@@ -1458,21 +1583,35 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		return
 
 	a.connected = true
+	var sid := _strike_now(a, b)
 	var dmg: int = stk[STK_DMG]
 	var away := 1 if b.xi() >= a.xi() else -1
 	b.buf.clear()
 
-	# A block stops it. **The sweep is level 2 and a standing block does not
-	# stop a low attack** -- that is what the seventh word is for.
-	# `set_no_block` is called on the man being dragged, and the stun that
-	# follows it does not guard either.
-	var blocked: bool = b.st == St.BLOCK and b.st != St.SPEARED 		and (int(stk[STK_LEVEL]) == 1 or b.table == BT_DUCK)
-	if blocked:
-		b.health -= 1                        # chip
-		b.vx = int(_react_vx(stk) * ONE) * away
-		if audio:
-			audio.block_react(int(stk[_Stk.REACT]))
-		return
+	# **The block, out of `strike_check_regs` (0x00059280) at 0x593a4.**
+	#
+	# It calls `is_he_blocking`, and then, if he is:
+	#
+	#     r1 = word5 & 0xff                 the CHIP damage
+	#     if (r1 < health[victim])  ->  blocked
+	#     else                      ->  straight on into the damage path
+	#
+	# So a block that would take him to zero **does not hold**: the last hit
+	# of a round always lands clean. That one `blt` is the whole rule, and it
+	# is why nobody in Mortal Kombat dies guarding.
+	if sid >= 0 and _is_he_blocking(b, stk):
+		var chip: int = int(_Stk.CHIP[sid])
+		if chip < b.health:
+			b.health -= chip
+			b.st = St.BLOCK
+			b.table = BT_NULL
+			b.vx = 0
+			b.connected = false
+			# `t_blocked_start` -> `t_rst5`, and the judder of `t_block_shake`.
+			b.blk_shake = BLK_SHAKE
+			if audio:
+				audio.block_hit(int(_Stk.BLOCK_IDX[sid]))
+			return
 
 	b.health -= dmg
 	# `reaction_start_chores` (0x00044b0c) turns the victim to face whoever hit
@@ -1526,6 +1665,34 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		a.timer_total = a.timer
 		a.table = BT_NULL
 		a.vx = 0
+
+
+## **`is_he_blocking` (0x0005837c), for a human player, line for line.**
+##
+## The order matters and so does what is NOT in it. There is no test that he is
+## in a block state, no test of an animation, no window: the engine asks the
+## joystick at the instant of the hit.
+##
+##     is_he_airborn(him)              -> airborne is never blocking
+##     him.part->0x30 & 4              -> `set_no_block`, never blocking
+##     check_block_bit(him)            -> the button must be DOWN right now
+##     joy[him] & 2                    -> down too: duck block, stops anything
+##     level & 2                       -> a LOW attack beats a standing block
+##     otherwise                          blocked
+##
+## The fifth line is the seventh word of the strike record earning its keep.
+## The sweep is the only one of the 27 with the bit set, which is exactly the
+## rule a Mortal Kombat player knows: you cannot stand and block a sweep.
+func _is_he_blocking(b: Fight, stk: Array) -> bool:
+	if b.yi() < _ground_y():
+		return false
+	if b.no_block:
+		return false
+	if (b.raw & IN_BL) == 0:
+		return false
+	if b.raw & IN_DOWN:
+		return true
+	return (int(stk[STK_LEVEL]) & _Stk.LVL_LOW) == 0
 
 
 ## Put a fighter into the reaction this strike names.
@@ -1722,6 +1889,11 @@ func _step_spear(f: Fight, other: Fight) -> void:
 	other.table = BT_NULL
 	other.st = St.SPEARED
 	other.pulled_by = f
+	# `t_tugged_in_by_spear` (0x0007c504) calls `set_no_block` on the man it is
+	# dragging, at offset +0x32 -- the second thing the state does. He cannot
+	# guard while the rope has him, and he cannot guard through the stun that
+	# follows either, because nothing clears the bit until he is free.
+	other.no_block = true
 	other.vy = 0
 	other.g = 0
 	other.y = _ground_y() * ONE             # ground_him
@@ -1851,6 +2023,10 @@ func tick() -> void:
 		last_special = fighters[0].special_name
 
 	for i in 2:
+		# **Kept on the fighter.** `is_he_blocking` runs inside the ATTACKER's
+		# hit check and asks the VICTIM's joystick, so the victim's word has
+		# to still be around when the hit is resolved.
+		fighters[i].raw = int(raw[i])
 		_think(fighters[i], fighters[1 - i], raw[i])
 
 	# **The animation clock runs on the GAME's tick**, not on the renderer's,
@@ -1971,7 +2147,13 @@ func _ani_for(f: Fight) -> Array:
 			# dragged rather than reacting.
 			return [ANI_HIT, RATE_TUGGED]
 		St.BLOCK:
-			return [ANI_BLOCK, -1]
+			# 12 standing, 6 ducking -- `t_do_block_hi` and `t_do_duck_block`
+			# are the same four lines with a different index -- both at 3.
+			return [ANI_DUCK_BLOCK if f.blk_duck else ANI_BLOCK, RATE_BLOCK]
+		St.UNBLOCK:
+			# The same clip. There is no release animation in the character at
+			# all; the engine walks this one backwards.
+			return [ANI_DUCK_BLOCK if f.blk_duck else ANI_BLOCK, -1]
 		St.DUCK:
 			return [ANI_DUCK, -1]
 		St.JUMP:
@@ -2039,6 +2221,17 @@ func _pose(f: Fight) -> void:
 			var at: int = 0 if gone < RATE_FALL else last
 			f.node.set_pose(int(tail[at]), int(tail[at]), 0.0)
 			return
+
+	# `t_block_shake`: one frame forward, hold, one frame back, hold, three
+	# times over. The blocker does not move -- the loop ends on
+	# `stop_me_player` -- so this is the whole of what a blocked hit looks
+	# like from his side.
+	if f.blk_shake > 0 and n > 1:
+		@warning_ignore("integer_division")
+		var phase := (f.blk_shake / BLK_SHAKE_HOLD) % 2
+		idx = clampi(idx - phase, 0, n - 1)
+		f.node.set_pose(frames[idx], frames[idx], 0.0)
+		return
 
 	if f.st == St.SPECIAL and f.special == _Moves.SP_TELEPUNCH and n >= 3:
 		idx = 2 if f.tele_wrapped else mini(f.ani_index, 1)
