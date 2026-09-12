@@ -49,6 +49,9 @@ var _rows := VBoxContainer.new()
 var _hint := Label.new()
 
 signal play_stage(stem: String)
+## The front end and the pause menu show the SAME video page; this asks the
+## shell to put it up.
+signal open_options
 
 
 func _ready() -> void:
@@ -231,6 +234,7 @@ func _show_main() -> void:
 	await get_tree().process_frame
 	_button("FIGHT", func(): _show_stages(false))
 	_button("STAGE VIEWER", func(): _show_stages(true))
+	_button("OPTIONS", func(): open_options.emit())
 	_button("BACK", _show_title)
 	_button("QUIT", func(): get_tree().quit())
 	_layout()

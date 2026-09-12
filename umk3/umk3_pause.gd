@@ -40,6 +40,9 @@ const _Input := preload("res://umk3/umk3_input.gd")
 signal closed
 signal reset_round
 signal quit_match
+## The pause menu does not own the video page -- the front end shows the same
+## one -- so it asks for it rather than drawing it.
+signal open_video
 
 enum Page { ROOT, CONTROLS }
 
@@ -54,8 +57,13 @@ var cfg_player := 0
 var capturing := -1
 ## Capture into the pad column rather than the keyboard one.
 var capture_pad := false
+## True while the video page is up over this one. Both are Controls listening
+## on `_input`, and the order they are called in is not something to lean on:
+## the page in front says so explicitly.
+var suspended := false
 
-const ROOT_ITEMS := ["RESUME", "CONTROLS", "RESTART ROUND", "QUIT TO MENU"]
+const ROOT_ITEMS := ["RESUME", "CONTROLS", "VIDEO OPTIONS", "RESTART ROUND",
+	"QUIT TO MENU"]
 
 ## Row 0 of the controls page is the device; the ten bits follow it.
 const ROW_DEVICE := 0
@@ -86,7 +94,7 @@ func close() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not visible:
+	if not visible or suspended:
 		return
 
 	# **A capture eats the next real press, whatever it is.**
@@ -213,9 +221,13 @@ func _activate() -> void:
 			page = Page.CONTROLS
 			sel = 0
 		2:
+			# Shown OVER the pause menu, which stays up behind it, so closing
+			# the video page comes back here rather than back to the fight.
+			open_video.emit()
+		3:
 			reset_round.emit()
 			close()
-		3:
+		4:
 			quit_match.emit()
 			close()
 

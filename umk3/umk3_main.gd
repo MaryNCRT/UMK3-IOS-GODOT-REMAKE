@@ -15,11 +15,13 @@ const _InputHud := preload("res://umk3/umk3_inputhud.gd")
 const _Bars := preload("res://umk3/umk3_hud.gd")
 const _Pause := preload("res://umk3/umk3_pause.gd")
 const _InputCfg := preload("res://umk3/umk3_input.gd")
+const _Video := preload("res://umk3/umk3_video.gd")
+const _Options := preload("res://umk3/umk3_options.gd")
 
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-12 08:00  block held 1:1, device choice, start pauses"
+const BUILD := "2026-09-12 09:00  run, block, coin markers, video options"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -34,6 +36,11 @@ var _hud: Label
 var _keys: Control
 var _bars: Control
 var _pause: Control
+## The video settings and the page that edits them. **One of each**, shared by
+## the front end and the pause menu, so a change made in one is already true in
+## the other.
+var _video = null
+var _options: Control
 ## `--menu 1` opens the pause menu on the first frame, which is how it is
 ## photographed without a hand on the keyboard.
 var _open_menu := 0
@@ -106,9 +113,24 @@ func _ready() -> void:
 	_world = Node3D.new()
 	add_child(_world)
 
+	# The window is put where it was left BEFORE anything is drawn into it.
+	_video = _Video.new()
+	_video.apply()
+
 	_menu = _Menu.new()
 	_menu.play_stage.connect(_enter_stage)
+	_menu.open_options.connect(_show_options)
 	add_child(_menu)
+
+	# On top of everything, including the pause menu, and running while the
+	# tree is paused -- it is shown from inside the pause.
+	_options = _Options.new()
+	_options.video = _video
+	_options.process_mode = Node.PROCESS_MODE_ALWAYS
+	_options.closed.connect(func() -> void:
+		if _pause:
+			_pause.suspended = false)
+	add_child(_options)
 
 	# **Every flag is read BEFORE anything acts on one.** `--stage` enters the
 	# stage straight away, and when the parse ran in file order that happened
@@ -166,11 +188,19 @@ func _process(_dt: float) -> void:
 		_input.detect()
 		_pad_start()
 	if _open_menu > 0 and _pause and _in_stage:
-		if _open_menu > 1:
-			_pause.page = 1               # straight to the controls page
+		var which := _open_menu
 		_open_menu = 0
-		_pause.open() if _pause.page == 0 else _pause.set("visible", true)
-	if _pause and _pause.visible:
+		_pause.open()
+		if which == 2:
+			_pause.page = 1               # straight to the controls page
+		elif which == 3:
+			_show_options()               # straight to the video page
+	var want_pause := false
+	if _pause != null and _pause.visible:
+		want_pause = true
+	if _options != null and _options.visible and _in_stage:
+		want_pause = true
+	if want_pause:
 		get_tree().paused = true
 	elif get_tree().paused:
 		get_tree().paused = false
@@ -218,6 +248,15 @@ func _pad_start() -> void:
 	if down and not _start_held:
 		_toggle_pause()
 	_start_held = down
+
+
+## The one video page, from wherever it was asked for.
+func _show_options() -> void:
+	if _options == null:
+		return
+	if _pause:
+		_pause.suspended = true
+	_options.open()
 
 
 func _toggle_pause() -> void:
@@ -279,7 +318,10 @@ func _enter_stage(stem: String) -> void:
 			if _fight:
 				_fight.reset())
 		_pause.quit_match.connect(_leave_stage)
+		_pause.open_video.connect(_show_options)
 		add_child(_pause)
+		# The pause menu goes UNDER the options page, which was added first.
+		move_child(_options, -1)
 	_cam.current = true
 	_hud.visible = true
 	_load_stage()

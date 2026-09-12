@@ -81,6 +81,8 @@ const DRAIN := 1.5
 const ITALIC := 0.22
 
 var tex: Texture2D = null
+## The round marker. **It is a coin, and it is its own texture page.**
+var coin: Texture2D = null
 var health := [100, 100]
 var run := [100, 100]
 var wins := [0, 0]
@@ -101,6 +103,11 @@ func _ready() -> void:
 
 func setup(textures) -> void:
 	tex = textures.get_texture("HUD_TPAGE.???")
+	# `DrawHUD` (0x000282dc) reaches for `_CoinTPage` (0x001f40d4) when it
+	# draws the round markers, not for `_HUDTPage` -- a separate global with a
+	# separate page, and the only 32x32 in `Textures/` is `LOGO_COIN_32.PNG`:
+	# the gold dragon token. The squares this drew before were invented.
+	coin = textures.get_texture("LOGO_COIN_32.???")
 
 
 ## One game frame of the bar chasing the number.
@@ -224,17 +231,34 @@ func _run(r: Rect2, frac: float, mirrored: bool) -> void:
 		SPR_GREEN)
 
 
-## The round counter, beside the run meter: one square per round won, two
-## rounds to a match, which is Mortal Kombat's own rule.
+## **The round markers, out of `DrawHUD` itself.**
+##
+## The block at 0x0002868a is not a loop. It tests `_RoundWins` (0x0014e22c),
+## draws ONE sprite, tests it again against 1, and draws a SECOND -- unrolled,
+## two at most, and **nothing at all is drawn for a round not yet won**. The
+## empty outlined boxes this used to paint are not in the game.
+##
+## The numbers come off the same block: the size is the `#1.8e+01` moved into
+## s14 just before it, and the two x positions are the 32.0 and 54.0 sitting
+## in the literal pool at 0x00028718 -- so an 18-unit token every 22 units, in
+## the original 480-wide layout.
+## 18 units across, 22 apart. Where the pair SITS is this port's layout, the
+## same choice the bars themselves are, so the gap after the run meter is
+## mine and the size and the spacing are the game's.
+const COIN := 18.0
+const COIN_STEP := 22.0
+const COIN_GAP := 5.0
+
+
 func _wins(r: Rect2, n: int, mirrored: bool, s: float) -> void:
-	var d := 8.0 * s
-	var gap := 4.0 * s
+	if coin == null or n <= 0:
+		return
+	var d := COIN * s
 	var runw := r.size.x / (BAR_W / RUN_W)
-	var x: float = r.position.x + runw + gap
-	if mirrored:
-		x = r.position.x + r.size.x - runw - gap - (d * 2.0 + gap)
-	for i in 2:
-		var box := Rect2(x + float(i) * (d + gap), r.position.y, d, d)
-		draw_rect(box, Color(0.85, 0.1, 0.05) if i < n
-			else Color(0.1, 0.12, 0.3), true)
-		draw_rect(box, Color(0.99, 0.98, 0.42), false, maxf(1.0, s))
+	var y := r.position.y - (d - RUN_H * s) * 0.5
+	for i in mini(n, 2):
+		var off := (COIN_GAP + float(i) * COIN_STEP) * s
+		var x := r.position.x + runw + off
+		if mirrored:
+			x = r.position.x + r.size.x - runw - off - d
+		draw_texture_rect(coin, Rect2(x, y, d, d), false)

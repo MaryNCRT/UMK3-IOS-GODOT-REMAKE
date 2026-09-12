@@ -643,6 +643,31 @@ const UNBLOCK_FRAMES := 8
 const BLK_SHAKE_HOLD := 2
 const BLK_SHAKE := 12
 
+## **The run, measured end to end.**
+##
+## `run_setup` (0x00030fbc) is four calls: animation 0x46 into `pl->0x40` and
+## `get_char_ani`, `init_anirate` with 3, `towards_x_vel` with 0x80000, and
+## `group_sound` with 7. So: SCRUN at rate 3, eight units a frame TOWARD the
+## opponent, and the run grunt.
+const RUN_VX := int(8.0 * ONE)           ## measured, 0x80000 via towards_x_vel
+const RUN_VOICE := 7                     ## measured, group_sound's index
+
+## **The turbo bar is 48 and it drains one a frame.**
+##
+##     is_run_pressed    (0x0002f344)  joy & 0x40000; the bar must be non-zero,
+##                                     and an empty one costs 40 frames
+##     reduce_turbo_bar  (0x00030820)  one off the bar a frame, and the
+##                                     penalty held AT 40 the whole time
+##     RaiseTurboBars    (0x00057a90)  the penalty down one a frame, and only
+##                                     when it is gone does the bar climb --
+##                                     `cmp r2, #0x2f` so it stops at 48
+##
+## Which is why an emptied bar feels so much worse than a half-used one: the
+## forty frames start counting from when you STOP, not from when you emptied
+## it, and running keeps resetting them.
+const RUN_MAX := 0x30                    ## measured, 48
+const RUN_PENALTY := 0x28                ## measured, 40
+
 const RATE_STANCE := 6
 const RATE_RUN := 3
 
@@ -720,7 +745,8 @@ const GROUND_OFFSET := [
 ## dragged across the floor is something that happens over many frames and a
 ## reaction is over when its animation is.
 enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT, SPECIAL,
-	SPEARED, THROWN, FALLING, DOWN, GETUP, DEAD, VICTORY, STUNNED, UNBLOCK }
+	SPEARED, THROWN, FALLING, DOWN, GETUP, DEAD, VICTORY, STUNNED, UNBLOCK,
+	RUN }
 
 ## The keyboard, the same map the C build uses: player one is the left hand
 ## plus U I O J K L, player two is the arrows and the numeric keypad.
@@ -750,6 +776,8 @@ class Fight extends RefCounted:
 	var connected := false
 	var wins := 0
 	var prev_buttons := 0
+	## Which of those bits went down this frame -- `swscan`'s press set.
+	var went := 0
 	## Was the stick held AWAY from the opponent when the button went down?
 	## `is_stick_away` (0x00055df0) is what turns a high kick into a
 	## roundhouse and a low kick into a sweep.
@@ -777,6 +805,10 @@ class Fight extends RefCounted:
 	## `set_no_block` (0x00054f20): `part->0x30 |= 4`, and a man carrying it
 	## cannot guard however hard he holds the button. The spear's drag sets it.
 	var no_block := false
+
+	## The turbo bar, `G + 0x378 + player * 4`, and the lockout at `+ 0x388`.
+	var turbo := RUN_MAX
+	var turbo_pen := 0
 
 	## The special-move input buffer, and which special is running.
 	var buf = _Moves.Buffer.new()
@@ -1010,6 +1042,9 @@ func reset() -> void:
 		f.blk_duck = false
 		f.blk_shake = 0
 		f.no_block = false
+		f.went = 0
+		f.turbo = RUN_MAX
+		f.turbo_pen = 0
 		f.sp_live = false
 		f.sp_stuck = false
 		f.sp_thrown = false
@@ -1048,17 +1083,45 @@ func _read_player(which: int) -> int:
 	return input.read(which)
 
 
-## Which of the six buttons went down THIS frame, or -1.
+## **`swscan` (0x00055e90), which runs once a frame for BOTH players at once.**
 ##
-## The C reads the translated bits out of G + 0x1c, because there the engine's
-## own `TranslateJoybits` has already run. The button INDEX is the same 0..5
-## either way, and here it comes straight off the raw word.
-func _pressed_button(f: Fight, raw: int) -> int:
+##     now = G->0x1c ; changed = G->0x20 ^ now ; G->0x20 = now
+##     changed & now    the bits that just went DOWN -> the press events
+##     changed & ~now   the bits that just came UP   -> the release events
+##
+## It matters that it runs for everyone every frame rather than inside the
+## state that happens to be asking. This port only tracked the edge on the
+## frames a fighter was standing free, so a button held through a block and
+## then released and pressed again produced NO edge -- the remembered word
+## still had it down from before.
+func _swscan(f: Fight, raw: int) -> void:
 	var now := raw & 0x3F0                      # the six button bits, 4..9
-	var went := now & ~f.prev_buttons
+	f.went = now & ~f.prev_buttons
 	f.prev_buttons = now
+
+
+## Which of the six buttons went down this frame, or -1.
+##
+## **The index is the engine's own, and it is now verified end to end.**
+## `swscan` hands a CHANGED BIT to `stack_switch_bits`, which turns the bit
+## position into a row of `_swtab` (0x0016f10c), and each row carries the index
+## `QueueAndJump` uses on the table at `pl->0x60`:
+##
+##     translated bit  4  ->  index 0    raw bit 4   HP
+##     translated bit 16  ->  index 1    raw bit 5   LP
+##     translated bit  5  ->  index 2    raw bit 6   BL
+##     translated bit  6  ->  index 3    raw bit 7   HK
+##     translated bit 17  ->  index 4    raw bit 8   LK
+##     translated bit 18  ->  index 5    raw bit 9   RUN
+##     translated bits 0..3 -> 6, 7, 8, 9            the four directions
+##
+## and `_bt_stance` (0x001655fc) reads, in those slots, `t_joy_hi_punch`,
+## `t_joy_lo_punch`, `t_joy_block`, `t_joy_hi_kick`, `t_joy_lo_kick`, then a
+## zero for run. Which is exactly BT_STANCE. The whole ten-bit contract is a
+## measurement now rather than a reading of joy.c.
+func _pressed_button(f: Fight, _raw: int) -> int:
 	for i in 6:
-		if went & (1 << (4 + i)):
+		if f.went & (1 << (4 + i)):
 			return i
 	return -1
 
@@ -1406,6 +1469,35 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.table = BT_STANCE
 				f.no_block = false
 			return
+		St.RUN:
+			# `reduce_turbo_bar` runs every frame of it and the state ends
+			# when the bar is gone -- plyrthread's 0x0003131e reads its
+			# result and stops the player when it comes back zero.
+			if f.turbo <= 0 or not (raw & IN_RUN) or not (raw & dir_f):
+				f.st = St.STANCE
+				f.table = BT_STANCE
+				f.vx = 0
+				return
+			f.turbo -= 1
+			f.turbo_pen = RUN_PENALTY
+			f.vx = RUN_VX * f.facing
+			# **The buttons still work.** Nothing in the run states calls
+			# `stuff_buttons`, so `_bt_stance` is still installed at
+			# `pl->0x60` and a punch out of a run is one press away.
+			var rb := _pressed_button(f, raw)
+			if rb >= 0 and f.table[rb]:
+				var rmv: int = f.table[rb]
+				f.stick_away = false
+				if rmv == MV_BLOCK or rmv == MV_DUCK_BLOCK:
+					f.st = St.BLOCK
+					f.blk_duck = false
+					f.table = BT_NULL
+					f.ani_dir = 1
+					f.vx = 0
+				else:
+					_start_attack(f, rmv, absi(other.xi() - f.xi()))
+					f.vx = 0
+			return
 		St.JUMP:
 			# A jump keeps whatever horizontal velocity it started with and
 			# only gravity acts.
@@ -1478,24 +1570,6 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 
 	var btn := _pressed_button(f, raw)
 
-	# **Block is a LEVEL.** `check_block_bit` (0x0002eca8) masks the translated
-	# joy word with 0x20 for player one and 0x2000 for player two -- the same
-	# button either way, since `TranslateJoybits` (0x00031a64) puts player
-	# two's bits eight places up -- and hands back whether it is down right
-	# now. No other button in the fight is read that way, and every one of the
-	# four places that asks about blocking asks through this function.
-	#
-	# So it is tested here, before the button table and before the stick: a
-	# held block outranks a walk, and `t_joy_block` opens by calling
-	# `disable_all_buttons` and `face_opponent`.
-	if raw & IN_BL:
-		f.st = St.BLOCK
-		f.blk_duck = (raw & IN_DOWN) != 0
-		f.table = BT_NULL
-		f.ani_dir = 1
-		f.vx = 0
-		return
-
 	if raw & IN_DOWN:
 		f.st = St.DUCK
 		f.table = BT_DUCK
@@ -1521,6 +1595,17 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		f.st = St.WALK_F
 		f.table = BT_STANCE
 		vx = WALK_FORWARD[CHARACTER][WALK_SPEED] * f.facing
+		# **Only a forward walk can become a run.** plyrthread asks
+		# `is_run_pressed` on the branch that took `get_walk_info_f`, and the
+		# backward branch at 0x00031352 compares against that same pointer
+		# before it will fall through to the check -- so running backwards is
+		# not a thing the state machine can express.
+		if (raw & IN_RUN) and _run_pressed(f):
+			f.st = St.RUN
+			f.turbo_pen = RUN_PENALTY
+			vx = RUN_VX * f.facing
+			if audio:
+				audio.group_voice(RUN_VOICE)
 	elif raw & dir_b:
 		f.st = St.WALK_B
 		f.table = BT_STANCE
@@ -1534,13 +1619,43 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		# `is_stick_away`, read once when the button goes down rather than
 		# every frame: which move this is, is decided at that moment.
 		f.stick_away = (raw & dir_b) != 0
-		# MV_BLOCK and MV_DUCK_BLOCK are still in the button tables because
-		# the ENGINE's tables have them there -- but the bit never reaches
-		# here, since the level test above has already claimed it.
-		if mv != MV_BLOCK and mv != MV_DUCK_BLOCK:
+		# **Getting INTO the block is a press; staying in it is a hold.**
+		# `QueueAndJump` (0x000572b8) skips the table entirely for a release
+		# event, so the table is dispatched on the press edge like every other
+		# button -- and then `t_joy_block_loop` holds on the level. So a block
+		# knocked out by an unguarded hit has to be pressed again, while one
+		# that took a blocked hit comes back into the loop at state 0x28e and
+		# keeps going on the bit alone.
+		if mv == MV_BLOCK or mv == MV_DUCK_BLOCK:
+			f.st = St.BLOCK
+			f.blk_duck = (raw & IN_DOWN) != 0
+			f.table = BT_NULL
+			f.ani_dir = 1
+			vx = 0
+		else:
 			_start_attack(f, mv, absi(other.xi() - f.xi()))
 			vx = 0
 	f.vx = vx
+
+
+## `is_run_pressed` (0x0002f344), the half of it that is not the joy bit.
+##
+## An empty bar does not just refuse -- it writes 40 into the lockout on its
+## way out, so hammering run on an empty bar keeps the bar empty.
+func _run_pressed(f: Fight) -> bool:
+	if f.turbo != 0:
+		return true
+	f.turbo_pen = RUN_PENALTY
+	return false
+
+
+## `RaiseTurboBars` (0x00057a90), once a frame for both of them.
+func _raise_turbo() -> void:
+	for f in fighters:
+		if f.turbo_pen != 0:
+			f.turbo_pen -= 1
+		elif f.turbo <= RUN_MAX - 1:
+			f.turbo += 1
 
 
 ## Does whatever `a` is doing reach `b` this frame?
@@ -2027,6 +2142,8 @@ func tick() -> void:
 		# hit check and asks the VICTIM's joystick, so the victim's word has
 		# to still be around when the hit is resolved.
 		fighters[i].raw = int(raw[i])
+		_swscan(fighters[i], raw[i])
+	for i in 2:
 		_think(fighters[i], fighters[1 - i], raw[i])
 
 	# **The animation clock runs on the GAME's tick**, not on the renderer's,
@@ -2052,6 +2169,7 @@ func tick() -> void:
 			var half := n / 2
 			if f.ani_index == 0 or f.ani_index == half:
 				audio.step()
+	_raise_turbo()
 	if shake > 0:
 		shake -= 1
 	if blood:
@@ -2059,6 +2177,8 @@ func tick() -> void:
 	if hud:
 		hud.health = [fighters[0].health, fighters[1].health]
 		hud.wins = [fighters[0].wins, fighters[1].wins]
+		hud.run = [fighters[0].turbo * 100 / RUN_MAX,
+			fighters[1].turbo * 100 / RUN_MAX]
 		hud.tick()
 	_resolve_hits(fighters[0], fighters[1])
 	_resolve_hits(fighters[1], fighters[0])
@@ -2146,6 +2266,8 @@ func _ani_for(f: Fight) -> Array:
 			# `t_tugged_in_by_spear` sets rate 8 -- slow, because he is being
 			# dragged rather than reacting.
 			return [ANI_HIT, RATE_TUGGED]
+		St.RUN:
+			return [ANI_RUN, RATE_RUN]
 		St.BLOCK:
 			# 12 standing, 6 ducking -- `t_do_block_hi` and `t_do_duck_block`
 			# are the same four lines with a different index -- both at 3.
@@ -2496,7 +2618,7 @@ func _attack_name(f: Fight, which: int) -> String:
 func status() -> String:
 	var names := ["STANCE", "WALK-F", "WALK-B", "DUCK", "BLOCK", "JUMP",
 		"ATTACK", "HIT", "SPECIAL", "SPEARED", "THROWN", "FALLING", "DOWN",
-		"GETUP", "DEAD", "VICTORY", "STUNNED"]
+		"GETUP", "DEAD", "VICTORY", "STUNNED", "UNBLOCK", "RUN"]
 	var out := "%d fps   pose %.1f ms   tick %d
 " % [
 		Engine.get_frames_per_second(),
