@@ -100,6 +100,59 @@ and one active light leaves pitch-black backs, which makes a viewer
 useless. It is labelled as a viewer affordance in both this project and
 the C one.
 
+## Exporting for Blender
+
+    godot --headless --path . --script umk3/umk3_export.gd -- --char SCORPION_STANDARD
+    godot --headless --path . --script umk3/umk3_export.gd -- --stages
+
+writes `export/characters/*.glb` and `export/stages/*.glb`, scaled so a
+fighter is **1.8 m**, with one animation clip per entry of the engine's
+own animation table (82 for Scorpion). `export/` is gitignored: it is
+the same game data in another format.
+
+**Characters come out rigged.** A `.skin` does not store a bind pose —
+it stores each vertex already multiplied by its weight in each bone's
+own frame — and neither the skeleton's offsets nor any of the 344
+animation frames turn out to be one. So the bind pose is *recovered*:
+585 of Scorpion's 1,278 vertices are shared between two or more bones,
+and three shared points fix the rigid transform between two bone frames
+exactly, with no fitting. The sweep spreads from there across the
+skeleton, and a bone that shares nothing is unconstrained in a way that
+does not matter — all of its vertices have a single influence.
+
+That claim is checked rather than asserted:
+
+    godot --headless --path . --script umk3/umk3_checkglb.gd -- --frame 216
+
+loads the `.glb` back, drives its skeleton with a real animation frame,
+skins it by hand and compares every vertex against `umk3_skin.gd` — the
+function the fight has been drawing with all along. **0.5 mm on a 1.8 m
+figure.**
+
+### FBX
+
+Godot has no FBX exporter; its FBX support is an importer. So the FBX is
+a conversion, and Blender does the writing:
+
+    godot ... umk3/umk3_export.gd -- --stages --blender "C:/.../blender.exe"
+
+which runs `export/glb_to_fbx.py` over everything it just wrote. That
+script is written out whether or not Blender is there, so the step can
+be run later by hand. Nothing is lost by stopping at `.glb`: Blender
+opens it with the armature, the weights and the clips intact.
+
+### Blender files coming back
+
+`project.godot` turns on `filesystem/import/blender/enabled`, so a
+`.blend` dropped into the project imports like any other model — Godot
+runs Blender in the background and re-runs it whenever the file changes.
+The path to Blender is an **editor** setting, not a project one, because
+it is per machine:
+
+    Editor > Editor Settings > FileSystem > Import > Blender > Blender Path
+
+`.fbx` import is on too, and needs nothing external.
+
 ## Where the path is remembered
 
 The first working `res` folder is saved to `user://umk3.cfg` and reused,
