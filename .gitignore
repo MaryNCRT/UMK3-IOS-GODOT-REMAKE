@@ -15,3 +15,8 @@ shot*.png
 # reason either of them can be shown to anyone.
 # ==========================================================================
 assets/
+
+# `export/` is the SAME DATA in another format: the characters and stages
+# written out as .glb (and .fbx, when Blender converts them) so they can be
+# opened in Blender. Derived from EA's files, so it is EA's, so it stays local.
+export/

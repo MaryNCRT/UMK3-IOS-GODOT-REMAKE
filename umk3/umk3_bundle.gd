@@ -53,6 +53,19 @@ const FRAME_LIST := "framelists/scorpionframes.txt"
 const FE_SHEETS := ["FE_TITLE_BG", "FE_MAINLOGO_EN", "FE_MENU_PLAY",
 	"FE_BUTTONS_01", "FE_BG_MARBLE"]
 
+## The spear, and Scorpion's fire.
+##
+## **These are named in the binary, not in any file group**, which is why
+## following the meshsets never brought them in. `RenderExtras` (0x00020fa8)
+## walks two players' worth of `_SpearStartPos` / `_SpearEndPos` and draws the
+## rope out of `_SpearTexture[0..2]`, picking one by `_SpearWhichTexture[p] % 3`
+## -- so SPEAR1, SPEAR2 and SPEAR3 are the rope's three frames and SPEAR4 is
+## the head. There is no spear MESH anywhere in the game: it is a sprite.
+##
+## SCORPFIRE and FLAME1..3 are the fire that goes with him.
+const EXTRA_TEXTURES := ["SPEAR1", "SPEAR2", "SPEAR3", "SPEAR4",
+	"SCORPFIRE", "FLAME1", "FLAME2", "FLAME3"]
+
 var res_dir := ""
 var _want := {}            ## relative path -> true
 var _missing: Array[String] = []
@@ -81,6 +94,8 @@ func _init() -> void:
 	_character(CHARACTER)
 	for sheet in FE_SHEETS:
 		_texture(sheet)
+	for tex in EXTRA_TEXTURES:
+		_texture(tex)
 	_sounds()
 
 	# Whatever else was asked for. A name with a `.bones` beside it is a

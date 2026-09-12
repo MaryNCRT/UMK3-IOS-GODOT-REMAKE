@@ -21,6 +21,7 @@
 extends Node3D
 
 const _Fighter := preload("res://umk3/umk3_fighter.gd")
+const _Spear := preload("res://umk3/umk3_spear.gd")
 const _Ani := preload("res://umk3/umk3_scorpion_ani.gd")
 const _Moves := preload("res://umk3/umk3_moves.gd")
 
@@ -134,9 +135,123 @@ const JUMP_VX := int(6.0 * ONE)         ## an angled jump's horizontal speed
 ## **How long a move lasts is its animation's length**, and now that is the
 ## engine's own stream rather than a range read off the frame list.
 const T_HIT := 16
-const REACH_PUNCH := 70
-const REACH_KICK := 86
-const DAMAGE := 4
+
+## **The attack boxes and the damage, measured.**
+##
+## `punch_strike_check` -> `strike_check_a0` -> `strike_check_a0_core` calls
+## `get_char_stk` (0x00055f88), which indexes a global at 0x000f3170 by the
+## CHARACTER NUMBER and then by a strike id, and hands the record to
+## `strike_check_ptr` (0x00059424). That walks four int32 out of it into the
+## object's 0x20, 0x24, 0x28 and 0x2c before calling `strike_check_regs`.
+##
+## The records have symbols on them. Scorpion is a ninja, so his are the
+## `_stk_nj_*` set plus two of his own, `_stk_scorp_spear` and `_stk_scorp_tele`
+## -- seven int32 each, and the first four are a BOX:
+##
+##     x, y, width, height     relative to the fighter, y growing DOWNWARD
+##
+## and the fifth word's high byte is the DAMAGE. Nothing about that reading is
+## assumed: the uppercut's box is the only one with a negative y (-19) and the
+## tallest height (74), the sweep's is the lowest (y 107) and the flattest (27),
+## and the damage runs jab 11, low punch 8, low kick 21, high kick 24,
+## roundhouse 29, uppercut 36. That is Mortal Kombat's own damage order, from a
+## table nobody here wrote.
+##
+## The seventh word is 1 for everything except the sweep, which is 2 -- a low
+## attack, which is what a sweep is.
+##
+## This replaces REACH_PUNCH = 70 and REACH_KICK = 86 and DAMAGE = 4, all three
+## invented, and a hit test that compared distances instead of boxes.
+const STK_X := 0
+const STK_Y := 1
+const STK_W := 2
+const STK_H := 3
+const STK_DMG := 4
+const STK_LEVEL := 5
+
+const STRIKE := {
+	MV_HI_PUNCH:   [77, 1, 53, 33, 11, 1],       # _stk_nj_hi_punch
+	MV_LO_PUNCH:   [84, 31, 61, 20, 8, 1],       # _stk_nj_lo_punch
+	MV_HI_KICK:    [96, 4, 65, 44, 24, 1],       # _stk_nj_hikick
+	MV_LO_KICK:    [109, 42, 74, 19, 21, 1],     # _stk_nj_lokick
+	MV_UPPERCUT:   [77, -19, 58, 74, 36, 1],     # _stk_nj_uppercut
+	MV_DUCK_PUNCH: [77, 54, 54, 18, 6, 1],       # _stk_nj_duck_punch
+	MV_DUCK_KICKH: [72, 59, 65, 30, 12, 1],      # _stk_nj_duck_kickh
+	MV_DUCK_KICKL: [87, 105, 68, 22, 6, 1],      # _stk_nj_duck_kickl
+	MV_JUMP_PUNCH: [78, 23, 58, 46, 16, 1],      # _stk_nj_jump_punch
+	MV_JUMP_KICK:  [78, 2, 66, 59, 19, 1],       # _stk_nj_jump_kick
+	MV_FLIP_PUNCH: [78, 23, 58, 46, 16, 1],      # _stk_nj_flip_punch
+	MV_FLIP_KICK:  [66, 35, 46, 38, 26, 1],      # _stk_nj_flip_kick
+}
+
+## The two Scorpion has of his own.
+const STK_SPEAR := [0, 0, 22, 22, 8, 1]          # _stk_scorp_spear
+const STK_TELE := [76, 17, 54, 42, 15, 1]        # _stk_scorp_tele
+
+
+# ================================================ the two specials, MEASURED
+#
+# Both were animations with nothing behind them. Both are now numbers out of
+# the binary, and the path to each is written down so it can be checked.
+
+## **The spear.** `t_do_scorpion_spear` (0x000515bc) writes 36 into the
+## object's 0x1c and jumps to `t_do_zap` (0x000758bc), which indexes
+## `_projectile_jumps` (0x00172694) with it -- and entry 36 of that table is
+## `tl_do_scorpion_spear`. That hands to `t_new_scorpion_spear_proc`, which
+## zeroes 0x1c and 0x20, and then to **`t_new_spear_proc` (0x0007c830)**, where
+## the projectile is actually born:
+##
+##     obj->0x20 += 0x18        then multi_adjust_xy -- so the spear appears
+##                              0 in front of the fighter and 24 BELOW his y,
+##                              which is his chest
+##     obj->0x40 = 9            the projectile's own animation
+##     obj->0x20 = 0xfff        init_anirate's "never advance" sentinel: the
+##                              spear does not animate, which is why the rope
+##                              is cycled by the RENDERER instead
+##     obj->0x1c = 0xa0000      10.0 in 16.16
+##     set_proj_vel (0x00075d6c) negates that for a fighter facing left and
+##                              writes it into the part's x velocity
+##
+## So: **ten units a frame, dead level, from chest height, no gravity.**
+const SPEAR_DY := 24                     ## measured, t_new_spear_proc
+const SPEAR_VX := int(10.0 * ONE)        ## measured, 0xa0000
+
+## **The teleport punch is not a warp.** `t_do_scorp_tele` (0x00050c5c) writes
+## 22 into 0x1c and jumps to `t_do_body_propell`, which indexes
+## `_propell_table` (0x00166f4c) -- twenty-nine function pointers, not numbers
+## -- and entry 22 is `tl_do_scorp_tele` (0x0004093c). That one calls
+## `face_opponent`, `flip_multi` and **`set_noedge`**, and then sets
+##
+##     obj->0x1c = 0xa0000              10.0      forward
+##     obj->0x20 = 0xa0000 - 0xd0000   -3.0       upward
+##     obj->0x24 = that + 0x35000       0.3125    gravity
+##
+## which is a jump: three up against 0.3125 down is 9.6 frames to the apex and
+## about 19 in the air, carrying him 192 units -- well past an opponent who
+## starts 110 away. `set_noedge` is why he may leave the arena on the way.
+## That is the move: he dives forward through the opponent and lands behind
+## him, and `_stk_scorp_tele` is the punch that lands with him.
+const TELE_VX := int(10.0 * ONE)         ## measured, 0xa0000
+const TELE_VY := -int(3.0 * ONE)         ## measured, 0xa0000 - 0xd0000
+const TELE_G := 0x5000                   ## measured, 0.3125
+
+## Which frame of the spear animation lets go of it.
+##
+## **Chosen.** `SCSPEAR` is four frames and the engine starts the projectile
+## from a state the animation does not describe. One in is where the arm is
+## out.
+const SPEAR_THROW_FRAME := 1
+
+## Reeling the victim in. `t_scorp_rope_pull` (0x0007c5fc) is the puller's side
+## and `t_tugged_in_by_spear` (0x0007c504) the victim's; the two rates they set
+## -- 3 and 8 -- are measured, the SPEED is not: the pull is a transfer between
+## two threads and the velocity comes from code that is not decompiled. Ten a
+## frame is the rope going back in as fast as it came out, and it stops where
+## `t_joy_hi_punch` stops calling itself far away, at 0x40 -- 64 units.
+const PULL_VX := int(10.0 * ONE)         ## chosen -- the rope's own speed
+const PULL_STOP := 64                    ## measured, t_joy_hi_punch's 0x40
+const RATE_PULL := 3                     ## measured, t_scorp_rope_pull
+const RATE_TUGGED := 8                   ## measured, t_tugged_in_by_spear
 
 ## How hard a hit pushes the victim back, and for how long.
 ##
@@ -318,7 +433,12 @@ const GROUND_OFFSET := [
 ]
 
 
-enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT, SPECIAL }
+## **SPEARED is a state, not a hit.** The engine gives the victim his own
+## thread -- `t_tugged_in_by_spear` -- rather than a reaction, because being
+## dragged across the floor is something that happens over many frames and a
+## reaction is over when its animation is.
+enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT, SPECIAL,
+	SPEARED }
 
 ## The keyboard, the same map the C build uses: player one is the left hand
 ## plus U I O J K L, player two is the arrows and the numeric keypad.
@@ -362,6 +482,23 @@ class Fight extends RefCounted:
 	var special := 0
 	var special_name := ""
 	var raw_prev := 0
+
+	## **His spear, while it is out.** One per fighter, because that is what
+	## `_SpearStartPos[2]` and `_DrawSpear[2]` are: two players, one each.
+	var sp_live := false
+	var sp_x := 0                ## 16.16, like every other position
+	var sp_y := 0
+	var sp_vx := 0
+	var sp_thrown := false       ## has this throw let go of it yet
+	var sp_tex := 0              ## _SpearWhichTexture: the rope's frame
+	var sp_node = null
+
+	## `set_noedge`: the walls do not apply. The teleport sets it.
+	var noedge := false
+	## The teleport has left the ground, so landing ends it.
+	var tele_air := false
+	## Whoever's spear is dragging him, while St.SPEARED.
+	var pulled_by = null
 
 	## init_anirate: the rate is loaded and the countdown starts at ONE, so the
 	## first advance lands on the very next frame rather than `rate` frames
@@ -459,6 +596,12 @@ func setup(res_dir: String, textures, cam: Camera3D, stem := "SCORPION_STANDARD"
 			error = n.error
 			return false
 		f.node = n
+		# One spear per fighter, because that is what `_DrawSpear[2]` and
+		# `_SpearStartPos[2]` are.
+		var sp = _Spear.new()
+		add_child(sp)
+		sp.setup(textures)
+		f.sp_node = sp
 		fighters.append(f)
 
 	# The stance and the walk are every round's first two seconds. Taken from
@@ -512,6 +655,16 @@ func reset() -> void:
 		f.ani_rate = WALK_FORWARD[CHARACTER][WALK_RATE]
 		f.ani_count = 1
 		f.ani_index = 0
+		f.sp_live = false
+		f.sp_thrown = false
+		f.noedge = false
+		f.tele_air = false
+		f.pulled_by = null
+		f.special = 0
+		f.special_name = ""
+		f.buf.clear()
+		if f.sp_node:
+			f.sp_node.clear()
 	frame = 0
 
 
@@ -589,13 +742,46 @@ func _move_frames(mv: int) -> int:
 	return _ani_length(MOVE_ANI[mv], maxi(1, RATE_STANCE + rate_bias))
 
 
-func _move_reach(mv: int) -> int:
-	match mv:
-		MV_HI_KICK, MV_LO_KICK, MV_DUCK_KICKH, MV_DUCK_KICKL, MV_JUMP_KICK, \
-		MV_FLIP_KICK:
-			return REACH_KICK
-		_:
-			return REACH_PUNCH
+## The strike record for whatever this fighter is doing, or an empty array.
+func _strike_of(f: Fight) -> Array:
+	if f.st == St.SPECIAL:
+		# **The spear is not here.** `_stk_scorp_spear` belongs to the
+		# projectile, which is its own object with its own box -- see
+		# `_spear_box`. Putting it on Scorpion gave the throw an invisible
+		# 22-unit punch and gave the spear itself nothing.
+		if f.special == _Moves.SP_TELEPUNCH:
+			return STK_TELE
+		return []
+	if f.st == St.ATTACK and STRIKE.has(f.move):
+		return STRIKE[f.move]
+	return []
+
+
+## Where a strike's box sits in the world, as [x0, y0, x1, y1] in engine units
+## with y growing DOWNWARD, which is the engine's own sense.
+##
+## The record's x is the distance IN FRONT of the fighter, so facing mirrors it
+## about his origin rather than negating it -- a box 77 wide starting 77 ahead
+## becomes one ending 77 behind.
+func _strike_box(f: Fight, stk: Array) -> Array:
+	var x0: int
+	if f.facing > 0:
+		x0 = f.xi() + stk[STK_X]
+	else:
+		x0 = f.xi() - stk[STK_X] - stk[STK_W]
+	var y0: int = f.yi() + stk[STK_Y]
+	return [x0, y0, x0 + stk[STK_W], y0 + stk[STK_H]]
+
+
+## A fighter's own body box, from `_FrameInfo2`. See BOX_W.
+func _body_box(f: Fight) -> Array:
+	var x0: int = f.xi() + BOX_LEFT
+	var y0: int = f.yi() + BOX_TOP
+	return [x0, y0, x0 + BOX_W, y0 + BOX_H]
+
+
+static func _overlap(a: Array, b: Array) -> bool:
+	return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
 func _start_attack(f: Fight, mv: int) -> void:
@@ -628,7 +814,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 	# Face the opponent whenever both feet are down. The engine does this in
 	# t_walk_flip_check, which is not decompiled; this is the obvious rule and
 	# is a stand-in.
-	if not airborne and f.st != St.ATTACK and f.st != St.HIT:
+	if not airborne and f.st != St.ATTACK and f.st != St.HIT 			and f.st != St.SPEARED:
 		f.facing = 1 if other.xi() >= f.xi() else -1
 
 	var dir_f := IN_RIGHT if f.facing > 0 else IN_LEFT
@@ -651,11 +837,47 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.move = MV_NONE
 			return
 		St.SPECIAL:
+			if f.special == _Moves.SP_SPEAR:
+				# The animation lets go of it; from there the projectile is
+				# its own object with its own velocity, which is exactly the
+				# shape `t_new_spear_proc` has.
+				if not f.sp_thrown and f.ani_index >= SPEAR_THROW_FRAME:
+					_throw_spear(f)
+			elif f.special == _Moves.SP_TELEPUNCH:
+				# It ends when he lands, not when the animation runs out: the
+				# arc is nineteen frames and the clip is three.
+				if airborne:
+					f.tele_air = true
+				elif f.tele_air:
+					f.noedge = false
+					f.vx = 0
+					f.st = St.STANCE
+					f.table = BT_STANCE
+					f.special = 0
+					f.special_name = ""
+					if audio:
+						audio.land()
+				return
 			if f.timer == 0:
 				f.st = St.STANCE
 				f.table = BT_STANCE
 				f.special = 0
 				f.special_name = ""
+			return
+		St.SPEARED:
+			# `t_tugged_in_by_spear`: dragged toward whoever threw it, with no
+			# input, until he is close enough to be hit.
+			var puller = f.pulled_by
+			if puller == null or absi(puller.xi() - f.xi()) <= PULL_STOP:
+				f.pulled_by = null
+				f.vx = 0
+				f.st = St.HIT
+				f.timer = _ani_length(ANI_HIT,
+					maxi(1, RATE_STANCE + rate_bias))
+				f.timer_total = f.timer
+				f.table = BT_NULL
+			else:
+				f.vx = PULL_VX * (1 if puller.xi() > f.xi() else -1)
 			return
 		St.JUMP:
 			# A jump keeps whatever horizontal velocity it started with and
@@ -689,6 +911,18 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		f.connected = false
 		f.buf.clear()
 		f.vx = 0
+		f.sp_thrown = false
+		f.tele_air = false
+		f.noedge = false
+		if f.special == _Moves.SP_TELEPUNCH:
+			# tl_do_scorp_tele, in order: face the opponent, then leave the
+			# ground with the three numbers it sets. `set_noedge` is the
+			# reason he is allowed to go through the wall he lands beyond.
+			f.facing = 1 if other.xi() >= f.xi() else -1
+			f.vx = TELE_VX * f.facing
+			f.vy = TELE_VY
+			f.g = TELE_G
+			f.noedge = true
 		if audio:
 			audio.voice()
 		return
@@ -739,74 +973,134 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 	f.vx = vx
 
 
+## Does whatever `a` is doing reach `b` this frame?
+##
+## **Box against box**, which is what `strike_check_regs` does with the four
+## words `strike_check_ptr` hands it. What was here before compared a distance
+## against an invented reach and a dy against the whole body height, so a jab
+## landed from anywhere in front and an uppercut could not miss.
+##
+## The strike is live for the middle of the move. **WHICH frames are live is
+## still chosen**: the engine calls `punch_strike_check` from the move's own
+## state on the frames that state decides, and those states are not decompiled.
 func _resolve_hits(a: Fight, b: Fight) -> void:
-	# A special connects too. **Its reach and damage are chosen**: the spear is
-	# a projectile in the real game and the teleport moves the fighter behind
-	# his opponent, and neither is implemented. What is implemented is the
-	# input, the animation, and that it lands.
-	if a.st == St.SPECIAL:
-		if a.connected:
-			return
-		@warning_ignore("integer_division")
-		var half := a.timer_total / 2
-		if a.timer == half and absi(b.xi() - a.xi()) < REACH_KICK * 2:
-			a.connected = true
-			b.health -= DAMAGE * 2
-			b.st = St.HIT
-			b.timer = _ani_length(ANI_HIT, maxi(1, RATE_STANCE + rate_bias))
-			b.timer_total = b.timer
-			b.table = BT_NULL
-			b.vx = KNOCKBACK * 2 * (1 if b.xi() > a.xi() else -1)
-			b.buf.clear()
-			if audio:
-				audio.hit(true, true)
+	if a.connected:
 		return
-	if a.st != St.ATTACK or a.connected:
-		return
-	# The strike lands in the middle of the move, not at its start.
-	@warning_ignore("integer_division")
-	if a.timer != _move_frames(a.move) / 2:
+	var stk := _strike_of(a)
+	if stk.is_empty():
 		return
 
-	var reach := _move_reach(a.move)
-	var dx := b.xi() - a.xi()
-	var dy := b.yi() - a.yi()
-
-	# A move only reaches FORWARD, so the test flips with the facing.
-	if a.facing > 0:
-		if dx < 0 or dx > reach:
-			return
-	elif dx > 0 or -dx > reach:
+	# The active window: from a quarter of the way in to three quarters. A
+	# choice, and the only one left in this function.
+	var elapsed := a.timer_total - a.timer
+	if elapsed < a.timer_total / 4 or elapsed > (a.timer_total * 3) / 4:
 		return
-	if dy < -BOX_H or dy > BOX_H:
+	if not _overlap(_strike_box(a, stk), _body_box(b)):
 		return
 
 	a.connected = true
-	# The reaction: pushed away from whoever hit him, facing kept.
-	b.vx = KNOCKBACK * (1 if dx > 0 else -1)
+	var dmg: int = stk[STK_DMG]
+	var away := 1 if b.xi() >= a.xi() else -1
 	b.buf.clear()
-	if b.st == St.BLOCK:
-		b.health -= 1                      # chip
+
+	# A block stops it. **The sweep is level 2 and a standing block does not
+	# stop a low attack** -- that is what the seventh word is for.
+	var blocked: bool = b.st == St.BLOCK and (
+		int(stk[STK_LEVEL]) == 1 or b.table == BT_DUCK)
+	if blocked:
+		b.health -= 1                        # chip
+		b.vx = KNOCKBACK * away
 		if audio:
 			audio.block()
-	else:
-		b.health -= DAMAGE
-		b.st = St.HIT
-		# **As long as the reaction animation, not a number.** The engine leaves
-		# a reaction when its stream ends; a fixed count is what made a hit feel
-		# detached from what was on screen.
-		var hit_ani: int = ANI_DUCK_HIT if b.table == BT_DUCK else ANI_HIT
-		b.timer = _ani_length(hit_ani, maxi(1, RATE_STANCE + rate_bias))
-		b.timer_total = b.timer
-		b.table = BT_NULL                  # how the engine takes input away
-		if audio:
-			audio.hit(a.move == MV_UPPERCUT,
-				a.move == MV_HI_PUNCH or a.move == MV_HI_KICK)
+		return
+
+	b.health -= dmg
+	b.st = St.HIT
+	# As long as the reaction animation: the engine leaves a reaction when its
+	# stream ends.
+	var hit_ani: int = ANI_DUCK_HIT if b.table == BT_DUCK else ANI_HIT
+	b.timer = _ani_length(hit_ani, maxi(1, RATE_STANCE + rate_bias))
+	b.timer_total = b.timer
+	b.table = BT_NULL                        # how the engine takes input away
+	# Harder hits push further. The engine takes the reaction's velocity from
+	# the move; this scales one number by the damage, which is a stand-in.
+	b.vx = KNOCKBACK * away * (2 if dmg >= 24 else 1)
+	if audio:
+		audio.hit(dmg >= 24, stk[STK_Y] < 40)
 	if b.health <= 0:
 		b.health = 0
 		a.wins += 1
 		if audio:
 			audio.voice()
+
+
+## Let go of the spear. `t_new_spear_proc`, transcribed.
+func _throw_spear(f: Fight) -> void:
+	f.sp_thrown = true
+	f.sp_live = true
+	f.sp_x = f.x
+	f.sp_y = f.y + SPEAR_DY * ONE
+	f.sp_vx = SPEAR_VX * f.facing
+	f.sp_tex = 0
+	if audio:
+		audio.swing(false)
+
+
+## The spear's box, in the same [x0, y0, x1, y1] the body boxes use.
+##
+## `_stk_scorp_spear` is 0, 0, 22, 22 -- and unlike every other strike record
+## those four are relative to the PROJECTILE, which is its own object, so the
+## box simply sits on it.
+func _spear_box(f: Fight) -> Array:
+	var x0: int = f.sp_x >> FX
+	var y0: int = f.sp_y >> FX
+	return [x0, y0, x0 + STK_SPEAR[STK_W], y0 + STK_SPEAR[STK_H]]
+
+
+## One frame of a spear in flight.
+##
+## `t_new_spear_proc`'s state 0x22c is the flying state and it ends two ways:
+## the opponent's thread becomes the speared one -- which is this hit -- or the
+## projectile stops being valid and the thing flashes out. Leaving the arena is
+## this port's version of the second.
+func _step_spear(f: Fight, other: Fight) -> void:
+	if not f.sp_live:
+		return
+	f.sp_tex += 1
+	f.sp_x += f.sp_vx
+	var sx := f.sp_x >> FX
+	if sx < WALL_L or sx > WALL_R:
+		f.sp_live = false
+		return
+	if not _overlap(_spear_box(f), _body_box(other)):
+		return
+
+	f.sp_live = false
+	# A standing block stops it: `_stk_scorp_spear`'s seventh word is 1, a high
+	# attack, and that is what a standing block is for.
+	if other.st == St.BLOCK:
+		other.health -= 1
+		if audio:
+			audio.block()
+		return
+
+	other.health -= STK_SPEAR[STK_DMG]
+	other.buf.clear()
+	other.table = BT_NULL
+	other.st = St.SPEARED
+	other.pulled_by = f
+	other.vy = 0
+	other.g = 0
+	other.y = (FLOOR_Y - BOX_H) * ONE       # ground_him
+	if audio:
+		audio.hit(false, false)
+	if other.health <= 0:
+		other.health = 0
+		f.wins += 1
+		other.st = St.HIT
+		other.pulled_by = null
+		other.timer = _ani_length(ANI_HIT, maxi(1, RATE_STANCE + rate_bias))
+		other.timer_total = other.timer
 
 
 ## One 60 Hz frame.
@@ -845,6 +1139,8 @@ func tick() -> void:
 				audio.step()
 	_resolve_hits(fighters[0], fighters[1])
 	_resolve_hits(fighters[1], fighters[0])
+	_step_spear(fighters[0], fighters[1])
+	_step_spear(fighters[1], fighters[0])
 
 	for f in fighters:
 		# **gravity_n_bounds, transcribed**: gravity adds into vy, and x is
@@ -857,10 +1153,12 @@ func tick() -> void:
 		f.x += f.vx
 		f.y += f.vy
 
-		if f.xi() < WALL_L:
-			f.x = WALL_L * ONE
-		elif f.xi() > WALL_R:
-			f.x = WALL_R * ONE
+		# `set_noedge`: the teleport goes through the wall rather than into it.
+		if not f.noedge:
+			if f.xi() < WALL_L:
+				f.x = WALL_L * ONE
+			elif f.xi() > WALL_R:
+				f.x = WALL_R * ONE
 
 		# The floor. gravity_n_bounds knows about walls, not about the ground;
 		# the engine grounds a fighter in code that has not been read.
@@ -892,6 +1190,10 @@ func _ani_for(f: Fight) -> Array:
 			return [MOVE_ANI[f.move], -1]
 		St.HIT:
 			return [ANI_DUCK_HIT if f.table == BT_DUCK else ANI_HIT, -1]
+		St.SPEARED:
+			# `t_tugged_in_by_spear` sets rate 8 -- slow, because he is being
+			# dragged rather than reacting.
+			return [ANI_HIT, RATE_TUGGED]
 		St.BLOCK:
 			return [ANI_BLOCK, -1]
 		St.DUCK:
@@ -960,6 +1262,25 @@ func _place() -> void:
 			_pose(f)
 		f.node.position = Vector3(_scene_x(f), _scene_y(f), 0.0)
 		f.node.set_facing(f.facing)
+		_place_spear(f)
+
+
+## The spear, where the fight says it is.
+##
+## `RenderExtras` draws the rope from `_SpearStartPos` to `_SpearEndPos`; the
+## start is the hand and the end is the head, and both are in world space
+## rather than relative to anything. So is this.
+func _place_spear(f: Fight) -> void:
+	if f.sp_node == null:
+		return
+	if not f.sp_live:
+		f.sp_node.clear()
+		return
+	var hand_x := float(f.xi()) * scale_units
+	var hand_y := float(FLOOR_Y - f.yi() - SPEAR_DY) * scale_units
+	var tip_x := float(f.sp_x >> FX) * scale_units
+	var tip_y := float(FLOOR_Y - (f.sp_y >> FX)) * scale_units
+	f.sp_node.place(hand_x, hand_y, tip_x, tip_y, f.sp_tex, scale_units)
 
 
 ## demo.c's framing: a LEVEL camera -- no pitch, because tilting it down is
@@ -1050,18 +1371,37 @@ func _draw_boxes() -> void:
 			Color(0.2, 1.0, 0.3) if f.st != St.HIT else Color(1.0, 0.3, 0.2))
 		_boxes[i * 2].visible = true
 
-		# The reach of an attack in flight, so a chosen number is visible as
-		# one. Nothing is drawn when the fighter is not attacking.
+		# **The strike's own box**, from the engine's `_stk_*` record, in the
+		# same place the hit test puts it. Drawn from `_strike_box` rather than
+		# from anything similar, so a box that is drawn and a box that hits
+		# cannot drift apart.
 		var r := _boxes[i * 2 + 1]
-		if f.st != St.ATTACK:
+		# A spear in flight IS this fighter's strike, so it is what the strike
+		# slot draws while it is out.
+		if f.sp_live:
+			var pb := _spear_box(f)
+			r.mesh = _wire_box(
+				float(pb[0]) * scale_units, float(FLOOR_Y - pb[3]) * scale_units,
+				float(pb[2]) * scale_units, float(FLOOR_Y - pb[1]) * scale_units,
+				Color(1.0, 0.25, 0.2))
+			r.visible = true
+			continue
+		var stk := _strike_of(f)
+		if stk.is_empty():
 			r.visible = false
 			continue
-		var reach := float(_move_reach(f.move)) * scale_units
-		var cx := float(f.xi()) * scale_units
-		var mid := top - float(BOX_H) * scale_units * 0.45
-		var x0: float = cx if f.facing > 0 else cx - reach
-		r.mesh = _wire_box(x0, mid - 4.0, x0 + reach, mid + 4.0,
-			Color(1.0, 0.9, 0.2))
+		var sb := _strike_box(f, stk)
+		var sx0 := float(sb[0]) * scale_units
+		var sx1 := float(sb[2]) * scale_units
+		var sy1 := float(FLOOR_Y - sb[1]) * scale_units
+		var sy0 := float(FLOOR_Y - sb[3]) * scale_units
+		# Yellow while it is winding up, red on the frames it can actually
+		# connect -- the same window `_resolve_hits` uses.
+		var el := f.timer_total - f.timer
+		var live := el >= f.timer_total / 4 and el <= (f.timer_total * 3) / 4
+		r.mesh = _wire_box(sx0, sy0, sx1, sy1,
+			Color(1.0, 0.25, 0.2) if live and not f.connected
+			else Color(0.9, 0.8, 0.25))
 		r.visible = true
 
 
@@ -1088,7 +1428,7 @@ func _wire_box(x0: float, y0: float, x1: float, y1: float,
 ## One line per fighter, for the HUD.
 func status() -> String:
 	var names := ["STANCE", "WALK-F", "WALK-B", "DUCK", "BLOCK", "JUMP",
-		"ATTACK", "HIT", "SPECIAL"]
+		"ATTACK", "HIT", "SPECIAL", "SPEARED"]
 	var out := "%d fps   pose %.1f ms   tick %d
 " % [
 		Engine.get_frames_per_second(),

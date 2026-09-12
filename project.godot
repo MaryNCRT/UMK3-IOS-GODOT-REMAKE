@@ -26,6 +26,30 @@ window/stretch/aspect="expand"
 
 3d/physics_engine="Jolt Physics"
 
+[filesystem]
+
+; **Blender files can be dropped straight into this project.**
+;
+; With this on, Godot imports a `.blend` the way it imports a `.glb`: it runs
+; Blender in the background, exports glTF and imports that, and it re-runs
+; whenever the `.blend` changes. That is what closes the loop with
+; umk3/umk3_export.gd -- a stage goes out as `.glb`, is edited in Blender, and
+; the `.blend` comes back into the project with no manual export step.
+;
+; It needs Blender 3.0 or newer, and the path to it is an EDITOR setting, not
+; a project one, because it is per machine:
+;
+;     Editor > Editor Settings > FileSystem > Import > Blender > Blender Path
+;
+; Set it to the folder holding blender.exe. Godot offers to do this for you
+; the first time you drop a `.blend` in.
+import/blender/enabled=true
+
+; The same for `.fbx`. Godot 4 reads FBX with a built-in parser, so nothing
+; external is needed to bring one IN -- only to write one out, which Godot
+; cannot do at all. See umk3/umk3_export.gd.
+import/import_fbx/enabled=true
+
 [rendering]
 
 rendering_device/driver.windows="d3d12"
