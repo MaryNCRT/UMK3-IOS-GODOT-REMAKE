@@ -25,6 +25,7 @@ const _Spear := preload("res://umk3/umk3_spear.gd")
 const _Ani := preload("res://umk3/umk3_scorpion_ani.gd")
 const _Moves := preload("res://umk3/umk3_moves.gd")
 const _Stk := preload("res://umk3/umk3_strikes.gd")
+const _Blood := preload("res://umk3/umk3_blood.gd")
 
 # ============================================================ measured data
 #
@@ -427,33 +428,74 @@ const COLLAPSE_HOLD := 0x12              ## measured, obj->0x64
 ## packed the way the walk table packs a rate and a speed.
 const RATE_GETUP := 4
 
-## **The knockdown clips are drawn IN THE AIR, and that is measured.**
+## **The fall, from `t_fall_on_my_back` (0x00041efc).** Four stores and a
+## hand-off, and every number of it is here:
 ##
-## Skinning each frame and comparing its lowest vertex against the stance's --
-## umk3_framey.gd does it -- gives, in body heights:
+##     part->0x24 = 0x8000    0.5      the gravity
+##     part->0x1c = 0                  no horizontal speed
+##     part->0x28 = 5                  the ANIRATE
+##     part->0x20 = 0                  **vy zero -- he is not launched**
+##     part->0x40 = 5 + 0x19 = 0x1e    animation 30, SCKNOCKDOWN
 ##
-##     SCKNOCKDOWN  119 -0.02   120 +0.01   121 +0.10   122 +0.11
-##                  123 +0.28   124 +0.18
-##     SCSWEEPFALL  246 +0.01   247 +0.05   248 +0.21   249 +0.24
-##     SCFALLTHUD    41 -0.01    42 -0.01    43 -0.03    44 -0.01    45 -0.04
+## then `t_flight` -> `t_flight_call`, which copies 0x20 into the part's vy and
+## 0x24 into its gravity, calls `away_x_vel` with the zero, and restores 0x28
+## as the anirate through `init_anirate`.
 ##
-## So a knockdown is a TUMBLE that rises to about a third of a metre and is
-## still off the ground when it ends, and **SCFALLTHUD is the landing** -- the
-## only one of the three authored at floor level. Holding the knockdown's last
-## frame left the body hanging exactly the +0.18 it is drawn at, which is the
-## float that was visible.
+## So a knockdown is **not a launch**. Gravity is armed and the velocity is
+## zero: the CLIP does the tumbling, at a rate of five. This port was throwing
+## the victim upward on an arc derived from the clip's own drawn height, which
+## was an invented thing sitting on top of a measured one.
+const FALL_G := 0x8000                   ## measured, 0.5 in 16.16
+const RATE_FALL := 5                     ## measured, part->0x28
+
+## **Where the body comes to rest, and the one place this leaves the streams.**
 ##
-## The launch follows from the same measurement: to rise 39.5 units against the
-## 0.5 gravity `t_do_jump_up` gives, a body leaves the ground at
-## `sqrt(2 * 0.5 * 39.5)`. The arc is then the one the animation was drawn for
-## rather than a number picked to look right.
-## How high, in engine units, each fall clip is drawn above the floor at its
-## highest. Measured by umk3_framey.gd, which skins every frame and compares
-## its lowest vertex with the stance's.
-const FALL_PEAK := {
-	ANI_KNOCKDOWN: 39.5,
-	ANI_SWEEPFALL: 33.2,
+## The stream for animation 30 is six frames and ends at SCKNOCKDOWN6;
+## `find_last_frame` (0x00055428) walks to the word before the END and so
+## returns that same frame. But `SCORPIONFRAMES` names **eight**, and skinning
+## all eight says what the missing two are for -- lowest vertex against the
+## stance's, and the body's own height:
+##
+##     124  SCKNOCKDOWN6   +0.18 h off the floor   0.40 h tall
+##     125  SCKNOCKDOWN7   +0.02 h                 0.41 h
+##     126  SCKNOCKDOWN8   -0.06 h                 **0.21 h**
+##
+##     249  SCSWEEPFALL4   +0.24 h                 0.44 h
+##     250  SCSWEEPFALL5   +0.08 h                 0.58 h
+##     251  SCSWEEPFALL6   -0.02 h                 **0.20 h**
+##
+## A fifth of a body tall with its lowest point ON the floor is a man lying
+## flat. Frame 124 is not: it is a third of a metre up and still half folded,
+## which is the pose that was being held and the reason a downed fighter looked
+## like he had stopped halfway.
+##
+## **Neither 126 nor 251 appears in any of the 92 streams** -- the pointer block
+## in `_nj_ani_data` is 92 long and `_character_anitabs2` points INTO it at
+## index 73, so there is no third table to look in. Something reaches them by a
+## path not yet found. Until it is, the landing plays them off the frame list
+## directly, and that is a deliberate departure from the stream rather than an
+## accident: the measurement and the game both say the body ends up flat.
+## **How much blood each reaction draws**, from the parameter every
+## `create_blood_proc` call site passes -- it lands in `obj->0x1c` and
+## `mk3_bloodevent` stores it per player, capped at twelve.
+##
+## **A reaction that is not here never calls it.** `t_r_lo_punch`,
+## `t_r_lo_kick`, `t_r_sweep`, the three `t_r_duck_*`, `t_r_roundhouse`, both
+## `t_r_flip_*`, `t_r_elbow_knee` and `t_r_tusk_elbow` draw no blood at all,
+## and that is the finding rather than a gap: a punch to the face bleeds and a
+## sweep to the legs does not.
+const BLOOD := {
+	0: 2,        # t_r_hi_kick
+	2: 3,        # t_r_hi_punch
+	8: 1,        # t_r_uppercut
 }
+
+const FALL_TAIL := {
+	30: [125, 126],                      # SCKNOCKDOWN7, SCKNOCKDOWN8
+	31: [250, 251],                      # SCSWEEPFALL5, SCSWEEPFALL6
+}
+
+
 ## How long a knocked-down fighter lies there before getting up. **Chosen** --
 ## the engine counts it in a state that is not decompiled.
 const DOWN_HOLD := 24
@@ -744,6 +786,7 @@ const SHAKE_FRAMES := 8
 var cam_mid := 0
 var cam_span := float(CAM_WIDTH)
 var hud = null
+var blood = null
 
 var _accum := 0.0
 var _cam: Camera3D = null
@@ -772,6 +815,10 @@ func setup(res_dir: String, textures, cam: Camera3D, stem := "SCORPION_STANDARD"
 		f.node = n
 		# One spear per fighter, because that is what `_DrawSpear[2]` and
 		# `_SpearStartPos[2]` are.
+		if blood == null:
+			blood = _Blood.new()
+			add_child(blood)
+			blood.setup(textures)
 		var sp = _Spear.new()
 		add_child(sp)
 		sp.setup(textures)
@@ -843,6 +890,8 @@ func reset() -> void:
 		f.buf.clear()
 		if f.sp_node:
 			f.sp_node.clear()
+	if blood:
+		blood.clear()
 	frame = 0
 	round_over = 0
 	if hud:
@@ -1400,6 +1449,12 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	if int(stk[_Stk.REACT]) == _Stk.UPPERCUT:
 		shake = SHAKE_FRAMES
 		shake_amp = 6.0
+	# `mk3_bloodevent`: at the victim's own position, away from the attacker.
+	if blood and BLOOD.has(int(stk[_Stk.REACT])):
+		@warning_ignore("integer_division")
+		var up := BOX_H / 3
+		blood.spawn(float(b.xi()), float(b.yi() + up),
+			int(BLOOD[int(stk[_Stk.REACT])]), away)
 	if audio:
 		# **The reaction picks the sound.** `t_r_hi_punch` plays `smack`,
 		# `t_r_lo_kick` plays `body_hit`, `t_r_uppercut` plays `big_smack`,
@@ -1435,31 +1490,18 @@ func _take_reaction(f: Fight, react: int) -> void:
 	f.timer_total = f.timer
 
 
-## Off the feet. The tumble is an ARC, because the clip is drawn as one.
-##
-## **Both ends of the arc come out of the clip itself.** It has to reach the
-## height the animation is drawn at and take exactly as long as the animation
-## takes, or the tumble is cut off half way -- which it was, at a borrowed
-## gravity of 0.5 the body landed on frame four of six.
-##
-## For an arc of `t` frames peaking at `h`:
-##
-##     apex at t/2, so  v = g*t/2  and  h = g*t*t/8
-##     giving           g = 8h/t/t   and   v = 4h/t
-##
-## The jump's own 0.5 is `t_do_jump_up`'s and belongs to a jump; nothing in the
-## binary gives a knockdown's, so it is derived rather than borrowed.
+## Off the feet -- `t_fall_on_my_back`, transcribed. No launch: gravity armed,
+## velocity zero, the clip at rate five doing the work.
 func _launch(f: Fight) -> void:
 	var clip: int = ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN
-	var ticks := _ani_length(clip, maxi(1, RATE_STANCE + rate_bias))
-	var peak: float = float(FALL_PEAK.get(clip, 39.5))
-	var t := float(maxi(ticks, 2))
 	f.st = St.FALLING
 	f.table = BT_NULL
-	f.vy = -int(4.0 * peak / t * ONE)
-	f.g = int(8.0 * peak / (t * t) * ONE)
-	f.timer = ticks
-	f.timer_total = ticks
+	f.vx = 0
+	f.vy = 0
+	f.g = FALL_G
+	f.ani_rate = RATE_FALL
+	f.timer = _ani_length(clip, RATE_FALL)
+	f.timer_total = f.timer
 
 
 ## `t_collapse_on_ground`, transcribed.
@@ -1756,6 +1798,8 @@ func tick() -> void:
 				audio.step()
 	if shake > 0:
 		shake -= 1
+	if blood:
+		blood.tick()
 	if hud:
 		hud.health = [fighters[0].health, fighters[1].health]
 		hud.wins = [fighters[0].wins, fighters[1].wins]
@@ -1832,10 +1876,10 @@ func _ani_for(f: Fight) -> Array:
 		St.FALLING:
 			return [ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN, -1]
 		St.DOWN, St.DEAD:
-			# **SCFALLTHUD**, the one clip of the three that is drawn at floor
-			# level. `find_last_frame` then holds its end, which is the body
-			# flat -- measured at -0.04 body heights, on the ground.
-			return [ANI_FALLTHUD, -1]
+			# The clip does not change -- the SETTLE is drawn straight from
+			# FALL_TAIL in `_pose`, because those two frames are not in any
+			# stream and so cannot be reached through one.
+			return [ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN, -1]
 		St.GETUP:
 			return [ANI_SWEEPUP if f.react == 4 else ANI_GETUP, RATE_GETUP]
 		St.VICTORY:
@@ -1893,19 +1937,27 @@ func _pose(f: Fight) -> void:
 	# way, which is the pose that looked wrong.
 	#
 	# So: the leap frames while he flies, the punch frame once he is back.
+	# **The flat pose is the DEFEAT, not every knockdown.**
+	#
+	# `t_collapse_on_ground` is the only thing in the fight that forces a held
+	# final frame -- `find_ani_part2`, `find_last_frame`, then the dead adjust
+	# and the shake. An ordinary knockdown has no such call: it plays its clip
+	# and goes to the getup. So a fighter who is going to stand up again ends
+	# on the clip's own last frame, and only a fighter who has lost the round
+	# settles all the way down through FALL_TAIL to the flat one.
+	if f.st == St.DEAD:
+		var tail: Array = FALL_TAIL.get(f.ani, [])
+		if not tail.is_empty():
+			var gone := f.timer_total - f.timer
+			var at: int = 0 if gone < RATE_FALL else tail.size() - 1
+			f.node.set_pose(int(tail[at]), int(tail[at]), 0.0)
+			return
+
 	if f.st == St.SPECIAL and f.special == _Moves.SP_TELEPUNCH and n >= 3:
 		idx = 2 if f.tele_wrapped else mini(f.ani_index, 1)
 		f.node.set_pose(frames[idx], frames[idx], 0.0)
 		return
 
-	# **`find_last_frame`**, and only for the DEAD: the round-ending collapse
-	# jumps to the end of the clip rather than playing it, which is what that
-	# call in `t_collapse_on_ground` is for. A fighter who is merely knocked
-	# down plays SCFALLTHUD through and holds its end on its own, because a
-	# one-shot stream does that.
-	if f.st == St.DEAD:
-		f.node.set_pose(frames[n - 1], frames[n - 1], 0.0)
-		return
 	var nxt: int = idx + 1
 	if nxt >= n:
 		# A one-shot holds its last frame; a loop goes round. Interpolating a
@@ -1936,6 +1988,8 @@ func _place() -> void:
 		f.node.position = Vector3(_scene_x(f), _scene_y(f), 0.0)
 		f.node.set_facing(f.facing)
 		_place_spear(f)
+	if blood:
+		blood.draw(scale_units, float(FLOOR_Y))
 
 
 ## The spear, where the fight says it is.

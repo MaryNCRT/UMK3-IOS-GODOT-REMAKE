@@ -65,7 +65,7 @@ const FE_SHEETS := ["FE_TITLE_BG", "FE_MAINLOGO_EN", "FE_MENU_PLAY",
 ## SCORPFIRE and FLAME1..3 are the fire that goes with him.
 const EXTRA_TEXTURES := ["SPEAR1", "SPEAR2", "SPEAR3", "SPEAR4",
 	"SCORPFIRE", "FLAME1", "FLAME2", "FLAME3", "HUD_TPAGE",
-	"SCORPION_DIFFUSE2"]
+	"SCORPION_DIFFUSE2", "BLOODNEW"]
 
 var res_dir := ""
 var _want := {}            ## relative path -> true
