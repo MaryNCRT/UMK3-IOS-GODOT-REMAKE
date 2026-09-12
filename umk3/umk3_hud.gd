@@ -8,9 +8,19 @@
 ##
 ##     x   0..191  y  0..19   192x20   the LIFE bar -- a blue gradient inside
 ##                                     a one-pixel yellow border
-##     x   0.. 63  y 20..27    64x8    the GREEN bar
-##     x   0.. 63  y 32..38    64x7    the dark RED bar
-##     x   0.. 31  y 39..51    32x13   an ORANGE fill
+##     x   0.. 63  y 20..27    64x8    the GREEN bar, the run meter
+##     x   0.. 31  y 32..51    32x20   the DAMAGE bar -- dark red into orange,
+##                                     bordered, and exactly as TALL as the
+##                                     life bar because it is drawn over it
+##     x  32.. 63  y 32..38    32x7    a flat red strip, the run meter's other
+##                                     colour: as tall as the green one
+##
+## **The last two share rows and that was a bug.** Reading the band y 32..51 as
+## one 64-wide sprite -- which is what this did -- straddles both of them, so
+## stretching it across a bar drew the damage gradient for the first half and
+## the flat red for the second, with a hard seam down the middle. Going column
+## by column shows the split at x 32 cleanly: the left half has a yellow border
+## on row 32 and the right half does not.
 ##
 ## ## What each one IS
 ##
@@ -46,7 +56,8 @@ extends Control
 ## The sprites, as rectangles in HUD_TPAGE.PNG. Measured, see above.
 const SPR_LIFE := Rect2(0, 0, 192, 20)
 const SPR_GREEN := Rect2(0, 20, 64, 8)
-const SPR_RED := Rect2(0, 32, 64, 7)
+const SPR_DAMAGE := Rect2(0, 32, 32, 20)
+const SPR_RUN_RED := Rect2(32, 32, 32, 7)
 
 const BAR_W := 192.0
 const BAR_H := 20.0
@@ -142,14 +153,25 @@ func _life(r: Rect2, frac: float, mirrored: bool, s: float) -> void:
 	draw_texture_rect_region(tex, r, SPR_LIFE)
 	if frac >= 1.0:
 		return
-	var inner := Rect2(r.position.x + BORDER * s, r.position.y + BORDER * s,
-		r.size.x - 2.0 * BORDER * s, r.size.y - 2.0 * BORDER * s)
-	var lost := inner.size.x * (1.0 - frac)
-	var lx: float = inner.position.x + inner.size.x - lost
+	# **Full height, inset in X**, and both halves of that are measured:
+	#
+	#     the LIFE sprite has yellow on all four edges -- x0 and x191 are
+	#     (252,249,108) on every row
+	#     the DAMAGE sprite has yellow on rows 32 and 51 only; its x0 and x31
+	#     are the gradient
+	#
+	# So the damage bar is drawn to fit INSIDE the life bar's left and right
+	# borders, and its own top and bottom borders land exactly on the life
+	# bar's. Drawing it the full width ate the border at the outer end, which
+	# is the broken edge that was visible.
+	var b := BORDER * s
+	var span := r.size.x - 2.0 * b
+	var lost := span * (1.0 - frac)
+	var lx: float = r.position.x + b + span - lost
 	if mirrored:
-		lx = inner.position.x
+		lx = r.position.x + b
 	draw_texture_rect_region(tex,
-		Rect2(lx, inner.position.y, lost, inner.size.y), SPR_RED)
+		Rect2(lx, r.position.y, lost, r.size.y), SPR_DAMAGE)
 
 
 ## The name, inside the bar.
@@ -187,10 +209,11 @@ func _run(r: Rect2, frac: float, mirrored: bool) -> void:
 	var x: float = r.position.x
 	if mirrored:
 		x = r.position.x + r.size.x - w
-	# Its empty part is the life bar's own blue, cropped to this height, so the
-	# two meters are the same material.
+	# Its empty part is the flat red strip that sits beside the damage bar on
+	# the page -- 32x7, the same height as the green one, which is what says
+	# the two belong together.
 	draw_texture_rect_region(tex, Rect2(x, r.position.y, w, r.size.y),
-		Rect2(SPR_LIFE.position, Vector2(SPR_LIFE.size.x, SPR_GREEN.size.y)))
+		SPR_RUN_RED)
 	if frac <= 0.0:
 		return
 	var fw := w * frac

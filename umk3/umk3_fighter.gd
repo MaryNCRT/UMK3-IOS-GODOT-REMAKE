@@ -74,6 +74,7 @@ var use_imported := false
 var skin = null
 var texture: ImageTexture = null
 var _stem := ""
+var _res_dir := ""
 var error := ""
 
 ## The skinned extent, in scene units, from the pose it was measured on. The
@@ -96,6 +97,10 @@ var _shadow_skel: Skeleton3D = null
 var _body := MeshInstance3D.new()
 var _shadow := MeshInstance3D.new()
 var _mat: StandardMaterial3D = null
+## Which colour this fighter wears. 0 is the character's own; 1 is the SECOND
+## PLAYER's, and it is a whole texture rather than a palette swap -- see
+## `set_palette`.
+var palette := 0
 var _shadow_mat: StandardMaterial3D = null
 var _cache := {}
 var _frame := -1
@@ -126,6 +131,7 @@ func _init() -> void:
 
 func load_character(res_dir: String, stem: String, textures) -> bool:
 	_stem = stem
+	_res_dir = res_dir
 	skin = _Skin.new()
 	if not skin.load_character(res_dir, stem):
 		error = skin.error
@@ -481,11 +487,55 @@ func _pose_bones(sk: Skeleton3D, fa: int, fb: int, frac: float) -> void:
 ## transform differs. Sharing halves both the memory and the 5.3 ms a pose
 ## costs. It is only valid between two fighters of the SAME character, which is
 ## what the caller checks.
+## **Player two's colours.**
+##
+## Every character in `res/Textures` ships a `_DIFFUSE` and a `_DIFFUSE2`:
+## SCORPION_DIFFUSE and SCORPION_DIFFUSE2, CYRAX and CYRAX2, JADE and JADE2,
+## twenty-six pairs. That second one is the alternate a mirror match puts on
+## player two, and there is no palette table to look for -- the "swap" is a
+## different image.
+##
+## `player_swpal` (0x00057480) is a different thing and worth not confusing
+## with this: it writes `part->0x44`, and `player_normpal` is the same call
+## with zero. That is the white FLASH on a hit -- `t_new_spear_proc` uses it
+## with 2 while the spear is stuck in someone -- not the character's colour.
+##
+## The posed meshes carry `_mat` and are SHARED between the two fighters, so
+## the alternate goes on as a `material_override` on this instance rather than
+## by rebuilding them.
+func set_palette(textures, index: int) -> void:
+	palette = index
+	if index == 0 or textures == null:
+		_body.material_override = null
+		return
+	var ms := _MeshSet.new()
+	if not ms.load_file(_res_dir.path_join(_stem + ".meshset")) 			or ms.meshes.is_empty():
+		return
+	var base: String = ms.meshes[0].texture
+	var dot := base.rfind(".")
+	if dot >= 0:
+		base = base.substr(0, dot)
+	var alt: Texture2D = textures.get_texture("%s%d.???" % [base, index + 1])
+	if alt == null:
+		return
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.vertex_color_use_as_albedo = true
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.albedo_texture = alt
+	var img: Image = alt.get_image()
+	if img and img.detect_alpha() != Image.ALPHA_NONE:
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+		m.alpha_scissor_threshold = 0.5
+	_body.material_override = m
+
+
 func share(other) -> bool:
 	if other == null or other.skin == null:
 		return false
 	skin = other.skin
 	texture = other.texture
+	_res_dir = other._res_dir
 	_mat = other._mat
 	_shadow_mat = other._shadow_mat
 	_cache = other._cache

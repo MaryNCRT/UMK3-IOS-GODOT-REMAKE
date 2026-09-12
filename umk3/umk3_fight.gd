@@ -410,6 +410,34 @@ const COLLAPSE_HOLD := 0x12              ## measured, obj->0x64
 ## `_getup_speeds` (0x001671a4) is 0x40004 for every character: four and four,
 ## packed the way the walk table packs a rate and a speed.
 const RATE_GETUP := 4
+
+## **The knockdown clips are drawn IN THE AIR, and that is measured.**
+##
+## Skinning each frame and comparing its lowest vertex against the stance's --
+## umk3_framey.gd does it -- gives, in body heights:
+##
+##     SCKNOCKDOWN  119 -0.02   120 +0.01   121 +0.10   122 +0.11
+##                  123 +0.28   124 +0.18
+##     SCSWEEPFALL  246 +0.01   247 +0.05   248 +0.21   249 +0.24
+##     SCFALLTHUD    41 -0.01    42 -0.01    43 -0.03    44 -0.01    45 -0.04
+##
+## So a knockdown is a TUMBLE that rises to about a third of a metre and is
+## still off the ground when it ends, and **SCFALLTHUD is the landing** -- the
+## only one of the three authored at floor level. Holding the knockdown's last
+## frame left the body hanging exactly the +0.18 it is drawn at, which is the
+## float that was visible.
+##
+## The launch follows from the same measurement: to rise 39.5 units against the
+## 0.5 gravity `t_do_jump_up` gives, a body leaves the ground at
+## `sqrt(2 * 0.5 * 39.5)`. The arc is then the one the animation was drawn for
+## rather than a number picked to look right.
+## How high, in engine units, each fall clip is drawn above the floor at its
+## highest. Measured by umk3_framey.gd, which skins every frame and compares
+## its lowest vertex with the stance's.
+const FALL_PEAK := {
+	ANI_KNOCKDOWN: 39.5,
+	ANI_SWEEPFALL: 33.2,
+}
 ## How long a knocked-down fighter lies there before getting up. **Chosen** --
 ## the engine counts it in a state that is not decompiled.
 const DOWN_HOLD := 24
@@ -710,6 +738,10 @@ func setup(res_dir: String, textures, cam: Camera3D, stem := "SCORPION_STANDARD"
 		elif not n.load_character(res_dir, stem, textures):
 			error = n.error
 			return false
+		# **Player two wears the second skin.** A mirror match is the normal
+		# case here -- both fighters are Scorpion -- and the game ships a
+		# `_DIFFUSE2` for every character for exactly this.
+		n.set_palette(textures, i)
 		f.node = n
 		# One spear per fighter, because that is what `_DrawSpear[2]` and
 		# `_SpearStartPos[2]` are.
@@ -996,16 +1028,22 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.table = BT_STANCE
 			return
 		St.FALLING:
-			# The fall plays out, then he lies there, then he gets up -- unless
-			# it was the round-ending one, and then he stays there. Three
-			# states because that is three animations: SCKNOCKDOWN or
-			# SCSWEEPFALL, the last frame of it held, and SCGETUP.
-			if not airborne and f.timer == 0:
+			# **It ends when he lands, not when the clip runs out.** The tumble
+			# is drawn in the air and SCFALLTHUD is the landing, so the switch
+			# between them is the floor.
+			# `vy > 0` is "past the apex": on the frame the launch happens he
+			# is still standing on the floor, and testing the height alone
+			# landed him again before he had left.
+			if not airborne and f.vy > 0:
+				f.vy = 0
+				f.g = 0
+				f.y = _ground_y() * ONE
 				if f.dying:
 					_hit_the_floor(f)
 					return
 				f.st = St.DOWN
-				f.timer = DOWN_HOLD
+				f.timer = _ani_length(ANI_FALLTHUD,
+					maxi(1, RATE_STANCE + rate_bias)) + DOWN_HOLD
 				f.timer_total = f.timer
 				f.vx = 0
 				if audio:
@@ -1280,11 +1318,38 @@ func _take_reaction(f: Fight, react: int) -> void:
 	if f.table == BT_DUCK and not KNOCKS_DOWN.has(react):
 		ani = ANI_DUCK_HIT
 	if KNOCKS_DOWN.has(react):
-		f.st = St.FALLING
-	else:
-		f.st = St.HIT
+		_launch(f)
+		return
+	f.st = St.HIT
 	f.timer = _ani_length(ani, maxi(1, RATE_STANCE + rate_bias))
 	f.timer_total = f.timer
+
+
+## Off the feet. The tumble is an ARC, because the clip is drawn as one.
+##
+## **Both ends of the arc come out of the clip itself.** It has to reach the
+## height the animation is drawn at and take exactly as long as the animation
+## takes, or the tumble is cut off half way -- which it was, at a borrowed
+## gravity of 0.5 the body landed on frame four of six.
+##
+## For an arc of `t` frames peaking at `h`:
+##
+##     apex at t/2, so  v = g*t/2  and  h = g*t*t/8
+##     giving           g = 8h/t/t   and   v = 4h/t
+##
+## The jump's own 0.5 is `t_do_jump_up`'s and belongs to a jump; nothing in the
+## binary gives a knockdown's, so it is derived rather than borrowed.
+func _launch(f: Fight) -> void:
+	var clip: int = ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN
+	var ticks := _ani_length(clip, maxi(1, RATE_STANCE + rate_bias))
+	var peak: float = float(FALL_PEAK.get(clip, 39.5))
+	var t := float(maxi(ticks, 2))
+	f.st = St.FALLING
+	f.table = BT_NULL
+	f.vy = -int(4.0 * peak / t * ONE)
+	f.g = int(8.0 * peak / (t * t) * ONE)
+	f.timer = ticks
+	f.timer_total = ticks
 
 
 ## `t_collapse_on_ground`, transcribed.
@@ -1296,17 +1361,10 @@ func _take_reaction(f: Fight, react: int) -> void:
 ## the last frame skipped the fall entirely: he was on the floor before he had
 ## finished going there.
 func _collapse(f: Fight) -> void:
-	f.st = St.FALLING
-	f.dying = true
 	f.react = _Stk.UPPERCUT                  # SCKNOCKDOWN, what 0x1e resolves to
-	f.table = BT_NULL
-	f.vx = 0
-	f.vy = 0
-	f.g = 0
+	f.dying = true
 	f.noedge = true                          # set_noedge
-	f.y = _ground_y() * ONE
-	f.timer = _ani_length(ANI_KNOCKDOWN, maxi(1, RATE_STANCE + rate_bias))
-	f.timer_total = f.timer
+	_launch(f)
 
 
 ## State 0x30f: the body is on the LAST frame of the knockdown, shifted back by
@@ -1315,6 +1373,9 @@ func _collapse(f: Fight) -> void:
 func _hit_the_floor(f: Fight) -> void:
 	f.st = St.DEAD
 	f.vx = 0
+	f.vy = 0
+	f.g = 0
+	f.y = _ground_y() * ONE
 	f.timer = COLLAPSE_HOLD
 	f.timer_total = f.timer
 	if not f.collapsed:
@@ -1625,9 +1686,10 @@ func _ani_for(f: Fight) -> Array:
 		St.FALLING:
 			return [ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN, -1]
 		St.DOWN, St.DEAD:
-			# The last frame of the knockdown, held -- which is what
-			# `find_last_frame` does in `t_collapse_on_ground`.
-			return [ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN, -1]
+			# **SCFALLTHUD**, the one clip of the three that is drawn at floor
+			# level. `find_last_frame` then holds its end, which is the body
+			# flat -- measured at -0.04 body heights, on the ground.
+			return [ANI_FALLTHUD, -1]
 		St.GETUP:
 			return [ANI_SWEEPUP if f.react == 4 else ANI_GETUP, RATE_GETUP]
 		St.VICTORY:
@@ -1675,10 +1737,12 @@ func _pose(f: Fight) -> void:
 	var frames: Array = s[2]
 	var n := frames.size()
 	var idx: int = clampi(f.ani_index, 0, n - 1)
-	# **`find_last_frame`**: a fighter on the floor is on the LAST frame of the
-	# knockdown, not wherever the clock happens to be. It is what stops a
-	# collapse looking like a pause halfway through a tumble.
-	if f.st == St.DOWN or f.st == St.DEAD:
+	# **`find_last_frame`**, and only for the DEAD: the round-ending collapse
+	# jumps to the end of the clip rather than playing it, which is what that
+	# call in `t_collapse_on_ground` is for. A fighter who is merely knocked
+	# down plays SCFALLTHUD through and holds its end on its own, because a
+	# one-shot stream does that.
+	if f.st == St.DEAD:
 		f.node.set_pose(frames[n - 1], frames[n - 1], 0.0)
 		return
 	var nxt: int = idx + 1
