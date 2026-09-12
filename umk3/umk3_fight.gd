@@ -341,9 +341,78 @@ const ANI_BLOCK := 12
 const ANI_VICTORY := 13
 const ANI_JUMP := 22
 const ANI_JUMPFLIP := 26
-const ANI_HIT := 28
+const ANI_HIT := 28                      ## SCHIHIT
+const ANI_LO_HIT := 29                   ## SCLOHIT -- never used before
+const ANI_KNOCKDOWN := 30                ## SCKNOCKDOWN
+const ANI_SWEEPFALL := 31                ## SCSWEEPFALL
+const ANI_STUMBLE := 32                  ## SCSTUMBLE
+const ANI_GETUP := 33                    ## SCGETUP
+const ANI_SWEEPUP := 34                  ## SCSWEEPUP
+const ANI_STUNNED := 37                  ## SCSTUNNED, loops
 const ANI_RUN := 70
+const ANI_FALLTHUD := 71                 ## SCFALLTHUD
 const ANI_SPEAR := 82
+
+## Which animation each REACTION plays.
+##
+## `t_r_hi_kick`, `t_r_combo0` and `t_combo1` are the three that set it where a
+## scan can see it -- `field40 = 0x1c` then `get_char_ani` -- and 0x1c is 28,
+## SCHIHIT. `t_stumble_back_vel` takes 32, `t_dizzy_by_boss` 37, and
+## `t_r_pounce`, `t_blast_through_anything` and `t_up_2_ceiling` all take 30,
+## SCKNOCKDOWN. The rest set the frame through the reaction driver instead and
+## are NOT recovered, so the entries below without a note are this port's
+## reading of the clip names -- and the clip names are the game's.
+const REACT_ANI := {
+	0: ANI_HIT,          # t_r_hi_kick       MEASURED, field40 = 0x1c
+	1: ANI_LO_HIT,       # t_r_lo_kick
+	2: ANI_HIT,          # t_r_hi_punch      t_combo1/t_r_combo0 measure 28
+	3: ANI_LO_HIT,       # t_r_lo_punch
+	4: ANI_SWEEPFALL,    # t_r_sweep         a sweep takes the feet away
+	5: ANI_HIT,          # t_r_duck_punch
+	6: ANI_HIT,          # t_r_duck_kickh
+	7: ANI_LO_HIT,       # t_r_duck_kickl
+	8: ANI_KNOCKDOWN,    # t_r_uppercut
+	9: ANI_HIT,          # t_r_elbow_knee
+	10: ANI_HIT,         # t_r_flip_kick
+	11: ANI_HIT,         # t_r_flip_punch
+	12: ANI_KNOCKDOWN,   # t_r_roundhouse
+	45: ANI_SWEEPFALL,   # t_r_slide
+	76: ANI_HIT,         # t_r_tusk_elbow
+	115: ANI_KNOCKDOWN,  # t_r_scorp_tele
+	117: ANI_STUMBLE,    # t_r_scorpion_spear
+}
+
+## **Which reactions put a fighter on the floor.** The uppercut, the
+## roundhouse, the sweep and the slide -- the four that in Mortal Kombat end
+## with you getting up again, and the four whose reactions above are a
+## knockdown or a fall rather than a flinch.
+const KNOCKS_DOWN := [4, 8, 12, 45, 115]
+
+## **The collapse at the end of a round**, from `t_collapse_on_ground`
+## (0x0007d294), which is the whole of what the loser does:
+##
+##     player_normpal, set_noedge, stop_me_player
+##     obj->0x64 = 0x12                 eighteen frames of it
+##     field40 = 0x1e  (SCKNOCKDOWN)    find_ani_part2, FIND_LAST_FRAME
+##     obj->0x1c = ochar_dead_adjusts[character]; obj->0x20 = 0
+##     multi_adjust_xy                  so the shift is in X, not Y
+##     shake_n_sound
+##
+## `find_last_frame` is why the body ends flat rather than mid-tumble, and
+## `_ochar_dead_adjusts` (0x00174dbc) is why it does not end standing in its
+## own footprint: a body lying down takes up room BEHIND where it stood.
+const DEAD_ADJUST := [
+	-72, -48, -64, -72, -76, -80, -56, -56, -69, -80, -64, -64, -48,
+	-72, -56, -56, -56, -56, -56, -56, -56, -56, -56, -56, -56, -56,
+]
+const COLLAPSE_HOLD := 0x12              ## measured, obj->0x64
+
+## `_getup_speeds` (0x001671a4) is 0x40004 for every character: four and four,
+## packed the way the walk table packs a rate and a speed.
+const RATE_GETUP := 4
+## How long a knocked-down fighter lies there before getting up. **Chosen** --
+## the engine counts it in a state that is not decompiled.
+const DOWN_HOLD := 24
 
 ## MV_* -> animation id. There is no SCJUMPPUNCH: the flip punch is the one
 ## airborne punch Scorpion has and stands in for both, which is a substitution
@@ -464,7 +533,7 @@ const GROUND_OFFSET := [
 ## dragged across the floor is something that happens over many frames and a
 ## reaction is over when its animation is.
 enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT, SPECIAL,
-	SPEARED, THROWN }
+	SPEARED, THROWN, FALLING, DOWN, GETUP, DEAD, VICTORY }
 
 ## The keyboard, the same map the C build uses: player one is the left hand
 ## plus U I O J K L, player two is the arrows and the numeric keypad.
@@ -534,6 +603,13 @@ class Fight extends RefCounted:
 	var tele_air := false
 	## Whoever's spear is dragging him, while St.SPEARED.
 	var pulled_by = null
+	## Which reaction is playing, so the knockdown knows what it came from.
+	var react := -1
+	## The x shift `t_collapse_on_ground` applies, held so it is undone on a
+	## reset rather than accumulating.
+	var collapsed := false
+	## This fall ends the round: he does not get up again.
+	var dying := false
 
 	## init_anirate: the rate is loaded and the countdown starts at ONE, so the
 	## first advance lands on the very next frame rather than `rate` frames
@@ -609,6 +685,10 @@ var _boxes: Array[MeshInstance3D] = []
 ## and the special he just completed.
 var last_raw := 0
 var last_special := ""
+
+## Frames since somebody hit the floor.
+var round_over := 0
+var hud = null
 
 var _accum := 0.0
 var _cam: Camera3D = null
@@ -690,6 +770,9 @@ func reset() -> void:
 		f.ani_rate = WALK_FORWARD[CHARACTER][WALK_RATE]
 		f.ani_count = 1
 		f.ani_index = 0
+		f.react = -1
+		f.collapsed = false
+		f.dying = false
 		f.sp_live = false
 		f.sp_stuck = false
 		f.sp_thrown = false
@@ -702,6 +785,9 @@ func reset() -> void:
 		if f.sp_node:
 			f.sp_node.clear()
 	frame = 0
+	round_over = 0
+	if hud:
+		hud.reset()
 
 
 # --------------------------------------------------------------------- input
@@ -909,6 +995,41 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.st = St.STANCE
 				f.table = BT_STANCE
 			return
+		St.FALLING:
+			# The fall plays out, then he lies there, then he gets up -- unless
+			# it was the round-ending one, and then he stays there. Three
+			# states because that is three animations: SCKNOCKDOWN or
+			# SCSWEEPFALL, the last frame of it held, and SCGETUP.
+			if not airborne and f.timer == 0:
+				if f.dying:
+					_hit_the_floor(f)
+					return
+				f.st = St.DOWN
+				f.timer = DOWN_HOLD
+				f.timer_total = f.timer
+				f.vx = 0
+				if audio:
+					audio.fall()
+			return
+		St.DOWN:
+			f.vx = 0
+			if f.timer == 0:
+				f.st = St.GETUP
+				f.timer = _ani_length(
+					ANI_SWEEPUP if f.react == 4 else ANI_GETUP, RATE_GETUP)
+				f.timer_total = f.timer
+			return
+		St.GETUP:
+			f.vx = 0
+			if f.timer == 0:
+				f.st = St.STANCE
+				f.table = BT_STANCE
+				f.react = -1
+			return
+		St.DEAD, St.VICTORY:
+			# The round is over. Neither of them does anything else.
+			f.vx = 0
+			return
 		St.ATTACK:
 			if f.timer == 0:
 				f.st = St.JUMP if airborne else St.STANCE
@@ -1114,12 +1235,11 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		return
 
 	b.health -= dmg
-	b.st = St.HIT
-	# As long as the reaction animation: the engine leaves a reaction when its
-	# stream ends.
-	var hit_ani: int = ANI_DUCK_HIT if b.table == BT_DUCK else ANI_HIT
-	b.timer = _ani_length(hit_ani, maxi(1, RATE_STANCE + rate_bias))
-	b.timer_total = b.timer
+	# `reaction_start_chores` (0x00044b0c) turns the victim to face whoever hit
+	# him and stops him dead before the reaction's own velocity is applied.
+	b.facing = 1 if a.xi() >= b.xi() else -1
+	b.vx = 0
+	_take_reaction(b, int(stk[_Stk.REACT]))
 	b.table = BT_NULL                        # how the engine takes input away
 	# **The reaction's own velocity, out of the reaction it names.** The strike
 	# record's fifth word carries the index into `_reaction_table`, and the
@@ -1128,6 +1248,10 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	# high kick pushes 4.5 a frame. What was here was one invented number
 	# doubled above 24 damage.
 	b.vx = int(_react_vx(stk) * ONE) * away
+	if b.health <= 0:
+		# **The round-ending hit always puts him on the floor.** Whatever the
+		# reaction was, the loser collapses.
+		_collapse(b)
 	if audio:
 		# **The reaction picks the sound.** `t_r_hi_punch` plays `smack`,
 		# `t_r_lo_kick` plays `body_hit`, `t_r_uppercut` plays `big_smack`,
@@ -1138,8 +1262,66 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	if b.health <= 0:
 		b.health = 0
 		a.wins += 1
-		if audio:
-			audio.voice()
+		a.st = St.VICTORY
+		a.timer = _ani_length(ANI_VICTORY, RATE_STANCE)
+		a.timer_total = a.timer
+		a.table = BT_NULL
+		a.vx = 0
+
+
+## Put a fighter into the reaction this strike names.
+##
+## **Which animation** is REACT_ANI, and **whether it is a knockdown** is
+## KNOCKS_DOWN -- both by the reaction id out of the strike record, the same
+## number that already chooses the knockback and the sound.
+func _take_reaction(f: Fight, react: int) -> void:
+	f.react = react
+	var ani: int = int(REACT_ANI.get(react, ANI_HIT))
+	if f.table == BT_DUCK and not KNOCKS_DOWN.has(react):
+		ani = ANI_DUCK_HIT
+	if KNOCKS_DOWN.has(react):
+		f.st = St.FALLING
+	else:
+		f.st = St.HIT
+	f.timer = _ani_length(ani, maxi(1, RATE_STANCE + rate_bias))
+	f.timer_total = f.timer
+
+
+## `t_collapse_on_ground`, transcribed.
+##
+## **It is two states, and running them as one was the bug.** State 0 does the
+## chores -- `player_normpal`, `set_noedge`, `stop_me_player` -- and moves to
+## 0x30c, which is where the knockdown PLAYS. Only the later state 0x30f calls
+## `find_last_frame` and applies `_ochar_dead_adjusts`. Collapsing straight to
+## the last frame skipped the fall entirely: he was on the floor before he had
+## finished going there.
+func _collapse(f: Fight) -> void:
+	f.st = St.FALLING
+	f.dying = true
+	f.react = _Stk.UPPERCUT                  # SCKNOCKDOWN, what 0x1e resolves to
+	f.table = BT_NULL
+	f.vx = 0
+	f.vy = 0
+	f.g = 0
+	f.noedge = true                          # set_noedge
+	f.y = _ground_y() * ONE
+	f.timer = _ani_length(ANI_KNOCKDOWN, maxi(1, RATE_STANCE + rate_bias))
+	f.timer_total = f.timer
+
+
+## State 0x30f: the body is on the LAST frame of the knockdown, shifted back by
+## the character's own dead adjust so it lies where a body would, and the floor
+## shakes.
+func _hit_the_floor(f: Fight) -> void:
+	f.st = St.DEAD
+	f.vx = 0
+	f.timer = COLLAPSE_HOLD
+	f.timer_total = f.timer
+	if not f.collapsed:
+		f.collapsed = true
+		f.x += DEAD_ADJUST[CHARACTER] * f.facing * ONE
+	if audio:
+		audio.fall()                         # shake_n_sound
 
 
 ## How far back this strike's reaction throws the victim, in units a frame.
@@ -1367,6 +1549,10 @@ func tick() -> void:
 			var half := n / 2
 			if f.ani_index == 0 or f.ani_index == half:
 				audio.step()
+	if hud:
+		hud.health = [fighters[0].health, fighters[1].health]
+		hud.wins = [fighters[0].wins, fighters[1].wins]
+		hud.tick()
 	_resolve_hits(fighters[0], fighters[1])
 	_resolve_hits(fighters[1], fighters[0])
 	_step_spear(fighters[0], fighters[1])
@@ -1401,9 +1587,11 @@ func tick() -> void:
 			if f.vy > 0:
 				f.vy = 0
 
-	if fighters[0].health == 0 or fighters[1].health == 0:
-		frame += 1
-		if frame > 180:
+	# The round is over once somebody is dead. Give the collapse and the
+	# victory pose time to play before the next one starts.
+	if fighters[0].st == St.DEAD or fighters[1].st == St.DEAD:
+		round_over += 1
+		if round_over > 180:
 			reset()
 	frame += 1
 
@@ -1431,7 +1619,19 @@ func _ani_for(f: Fight) -> Array:
 		St.ATTACK:
 			return [MOVE_ANI[f.move], -1]
 		St.HIT:
+			if f.react >= 0 and REACT_ANI.has(f.react) 					and f.table != BT_DUCK:
+				return [int(REACT_ANI[f.react]), -1]
 			return [ANI_DUCK_HIT if f.table == BT_DUCK else ANI_HIT, -1]
+		St.FALLING:
+			return [ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN, -1]
+		St.DOWN, St.DEAD:
+			# The last frame of the knockdown, held -- which is what
+			# `find_last_frame` does in `t_collapse_on_ground`.
+			return [ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN, -1]
+		St.GETUP:
+			return [ANI_SWEEPUP if f.react == 4 else ANI_GETUP, RATE_GETUP]
+		St.VICTORY:
+			return [ANI_VICTORY, RATE_STANCE]
 		St.SPEARED:
 			# `t_tugged_in_by_spear` sets rate 8 -- slow, because he is being
 			# dragged rather than reacting.
@@ -1475,6 +1675,12 @@ func _pose(f: Fight) -> void:
 	var frames: Array = s[2]
 	var n := frames.size()
 	var idx: int = clampi(f.ani_index, 0, n - 1)
+	# **`find_last_frame`**: a fighter on the floor is on the LAST frame of the
+	# knockdown, not wherever the clock happens to be. It is what stops a
+	# collapse looking like a pause halfway through a tumble.
+	if f.st == St.DOWN or f.st == St.DEAD:
+		f.node.set_pose(frames[n - 1], frames[n - 1], 0.0)
+		return
 	var nxt: int = idx + 1
 	if nxt >= n:
 		# A one-shot holds its last frame; a loop goes round. Interpolating a
@@ -1710,7 +1916,8 @@ func _attack_name(f: Fight, which: int) -> String:
 ## One line per fighter, for the HUD.
 func status() -> String:
 	var names := ["STANCE", "WALK-F", "WALK-B", "DUCK", "BLOCK", "JUMP",
-		"ATTACK", "HIT", "SPECIAL", "SPEARED", "THROWN"]
+		"ATTACK", "HIT", "SPECIAL", "SPEARED", "THROWN", "FALLING", "DOWN",
+		"GETUP", "DEAD", "VICTORY"]
 	var out := "%d fps   pose %.1f ms   tick %d
 " % [
 		Engine.get_frames_per_second(),

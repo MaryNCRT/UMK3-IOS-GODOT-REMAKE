@@ -12,6 +12,7 @@ const _Fighter := preload("res://umk3/umk3_fighter.gd")
 const _Audio := preload("res://umk3/umk3_audio.gd")
 const _Effects := preload("res://umk3/umk3_effects.gd")
 const _InputHud := preload("res://umk3/umk3_inputhud.gd")
+const _Bars := preload("res://umk3/umk3_hud.gd")
 
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
@@ -29,6 +30,7 @@ var _audio
 var _cam: Camera3D
 var _hud: Label
 var _keys: Control
+var _bars: Control
 var _world: Node3D
 
 ## Two ways to look at the same stage: the fight, and the free camera that was
@@ -147,8 +149,12 @@ func _process(_dt: float) -> void:
 		if _keys:
 			_keys.visible = true
 			_keys.set_state(_fight.last_raw, _fight.last_special)
+		if _bars:
+			_bars.visible = true
 	elif _keys:
 		_keys.visible = false
+		if _bars:
+			_bars.visible = false
 	if _shot == "":
 		return
 	if _shot_at == 0:
@@ -184,8 +190,12 @@ func _enter_stage(stem: String) -> void:
 		_cam.near = 1.0
 		_cam.fov = 25.0             # GAME_FOV_DEGREES, from the C port
 		_world.add_child(_cam)
+		# **The debug read-out lives at the BOTTOM.** The health bars are the
+		# top of the screen now and two things cannot share it.
 		_hud = Label.new()
-		_hud.position = Vector2(12, 8)
+		_hud.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+		_hud.grow_vertical = Control.GROW_DIRECTION_BEGIN
+		_hud.position = Vector2(12, -142)
 		_hud.add_theme_font_size_override("font_size", 16)
 		_hud.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
 		_hud.add_theme_constant_override("shadow_offset_y", 2)
@@ -195,6 +205,10 @@ func _enter_stage(stem: String) -> void:
 		_keys = _InputHud.new()
 		_keys.set_anchors_preset(Control.PRESET_FULL_RECT)
 		add_child(_keys)
+		# The health bars, drawn out of the game's own HUD_TPAGE sprites.
+		# Under the input panel in the tree so the panel stays readable.
+		_bars = _Bars.new()
+		add_child(_bars)
 	_cam.current = true
 	_hud.visible = true
 	_load_stage()
@@ -216,6 +230,9 @@ func _ensure_fight() -> void:
 		add_child(_audio)
 	_fight = _Fight.new()
 	_fight.audio = _audio
+	if _bars:
+		_bars.setup(_menu.textures)
+		_fight.hud = _bars
 	_world.add_child(_fight)
 	if not _fight.setup(_menu.res_dir, _menu.textures, _cam):
 		push_error("no fighter: " + str(_fight.error))
