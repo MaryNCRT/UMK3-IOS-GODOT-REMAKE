@@ -80,6 +80,12 @@ var shown := [100.0, 100.0]
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# **NEAREST, and it is not a preference.** The bar is a 192x20 sprite blown
+	# up two and a bit times, and its border is ONE pixel of yellow. Bilinear
+	# smears that border into the blue and, worse, pulls in the green bar that
+	# sits directly under it on the page -- the sprites are packed edge to edge
+	# with no gutter, so any filtering at all bleeds one into the next.
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 
 
 func setup(textures) -> void:
@@ -160,8 +166,16 @@ func _name(text: String, r: Rect2, mirrored: bool, s: float) -> void:
 	# Skew about the baseline, so the letters lean without drifting off it.
 	draw_set_transform_matrix(Transform2D(
 		Vector2(1.0, 0.0), Vector2(-ITALIC, 1.0), Vector2(x, y)))
-	draw_string(font, Vector2(1.5 * s, 1.5 * s), text,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(0, 0, 0, 0.9))
+	# **Bold by outline.** The fallback font has one weight and the original's
+	# name plate is heavy, so the glyphs are grown: a black outline for the
+	# edge the picture has, then a WHITE outline of its own, which is what
+	# actually thickens the strokes, then the fill.
+	var edge := maxf(3.0, 3.0 * s)
+	var weight := maxf(1.0, 1.6 * s)
+	draw_string_outline(font, Vector2.ZERO, text, HORIZONTAL_ALIGNMENT_LEFT,
+		-1, size, int(edge), Color(0, 0, 0, 0.95))
+	draw_string_outline(font, Vector2.ZERO, text, HORIZONTAL_ALIGNMENT_LEFT,
+		-1, size, int(weight), Color(1, 1, 1))
 	draw_string(font, Vector2.ZERO, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size,
 		Color(1, 1, 1))
 	draw_set_transform_matrix(Transform2D.IDENTITY)
