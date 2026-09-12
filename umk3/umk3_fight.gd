@@ -24,6 +24,7 @@ const _Fighter := preload("res://umk3/umk3_fighter.gd")
 const _Spear := preload("res://umk3/umk3_spear.gd")
 const _Ani := preload("res://umk3/umk3_scorpion_ani.gd")
 const _Moves := preload("res://umk3/umk3_moves.gd")
+const _Stk := preload("res://umk3/umk3_strikes.gd")
 
 # ============================================================ measured data
 #
@@ -136,101 +137,73 @@ const JUMP_VX := int(6.0 * ONE)         ## an angled jump's horizontal speed
 ## engine's own stream rather than a range read off the frame list.
 const T_HIT := 16
 
-## **The attack boxes and the damage, measured.**
+## **The attack boxes and the damage come out of the binary's own table now.**
 ##
-## `punch_strike_check` -> `strike_check_a0` -> `strike_check_a0_core` calls
-## `get_char_stk` (0x00055f88), which indexes a global at 0x000f3170 by the
-## CHARACTER NUMBER and then by a strike id, and hands the record to
-## `strike_check_ptr` (0x00059424). That walks four int32 out of it into the
-## object's 0x20, 0x24, 0x28 and 0x2c before calling `strike_check_regs`.
+## See umk3_strikes.gd, which is generated from `_nj_strikes` (0x00169f50) and
+## carries the reading of `strike_check_regs` that says how the four words turn
+## into a rectangle. The short version, because it was wrong here for a week:
 ##
-## The records have symbols on them. Scorpion is a ninja, so his are the
-## `_stk_nj_*` set plus two of his own, `_stk_scorp_spear` and `_stk_scorp_tele`
-## -- seven int32 each, and the first four are a BOX:
+##     facing right   left = X + x - w,  right = X + x
+##     facing left    left = X - x,      right = X - x + w
 ##
-##     x, y, width, height     relative to the fighter, y growing DOWNWARD
-##
-## and the fifth word's high byte is the DAMAGE. Nothing about that reading is
-## assumed: the uppercut's box is the only one with a negative y (-19) and the
-## tallest height (74), the sweep's is the lowest (y 107) and the flattest (27),
-## and the damage runs jab 11, low punch 8, low kick 21, high kick 24,
-## roundhouse 29, uppercut 36. That is Mortal Kombat's own damage order, from a
-## table nobody here wrote.
-##
-## The seventh word is 1 for everything except the sweep, which is 2 -- a low
-## attack, which is what a sweep is.
-##
-## This replaces REACH_PUNCH = 70 and REACH_KICK = 86 and DAMAGE = 4, all three
-## invented, and a hit test that compared distances instead of boxes.
-const STK_X := 0
-const STK_Y := 1
-const STK_W := 2
-const STK_H := 3
-const STK_DMG := 4
-const STK_LEVEL := 5
+## **x is the FAR edge and w is measured back toward the fighter.** Every box
+## in this file used to start at X + x and run outward, which put all of them a
+## full width too far away -- the low kick, 74 wide, claimed to reach X+183
+## where the engine stops at X+109. Two fighters could stand inside each
+## other's boxes and miss.
+const STK_X := _Stk.X
+const STK_Y := _Stk.Y
+const STK_W := _Stk.W
+const STK_H := _Stk.H
+const STK_DMG := _Stk.DMG
+const STK_LEVEL := _Stk.LEVEL
 
-const STRIKE := {
-	MV_HI_PUNCH:   [77, 1, 53, 33, 11, 1],       # _stk_nj_hi_punch
-	MV_LO_PUNCH:   [84, 31, 61, 20, 8, 1],       # _stk_nj_lo_punch
-	MV_HI_KICK:    [96, 4, 65, 44, 24, 1],       # _stk_nj_hikick
-	MV_LO_KICK:    [109, 42, 74, 19, 21, 1],     # _stk_nj_lokick
-	MV_UPPERCUT:   [77, -19, 58, 74, 36, 1],     # _stk_nj_uppercut
-	MV_DUCK_PUNCH: [77, 54, 54, 18, 6, 1],       # _stk_nj_duck_punch
-	MV_DUCK_KICKH: [72, 59, 65, 30, 12, 1],      # _stk_nj_duck_kickh
-	MV_DUCK_KICKL: [87, 105, 68, 22, 6, 1],      # _stk_nj_duck_kickl
-	MV_JUMP_PUNCH: [78, 23, 58, 46, 16, 1],      # _stk_nj_jump_punch
-	MV_JUMP_KICK:  [78, 2, 66, 59, 19, 1],       # _stk_nj_jump_kick
-	MV_FLIP_PUNCH: [78, 23, 58, 46, 16, 1],      # _stk_nj_flip_punch
-	MV_FLIP_KICK:  [66, 35, 46, 38, 26, 1],      # _stk_nj_flip_kick
+## MV_* -> the strike id the engine uses for it, before the close-range and
+## stick-away substitutions in `_strike_id`.
+const MOVE_STRIKE := {
+	MV_HI_PUNCH: _Stk.HI_PUNCH,
+	MV_LO_PUNCH: _Stk.LO_PUNCH,
+	MV_HI_KICK: _Stk.HIKICK,
+	MV_LO_KICK: _Stk.LOKICK,
+	MV_UPPERCUT: _Stk.UPPERCUT,
+	MV_DUCK_PUNCH: _Stk.DUCK_PUNCH,
+	MV_DUCK_KICKH: _Stk.DUCK_KICKH,
+	MV_DUCK_KICKL: _Stk.DUCK_KICKL,
+	MV_JUMP_PUNCH: _Stk.JUMP_PUNCH,
+	MV_JUMP_KICK: _Stk.JUMP_KICK,
+	MV_FLIP_PUNCH: _Stk.FLIP_PUNCH,
+	MV_FLIP_KICK: _Stk.FLIP_KICK,
 }
 
-## The two Scorpion has of his own.
-const STK_SPEAR := [0, 0, 22, 22, 8, 1]          # _stk_scorp_spear
-const STK_TELE := [76, 17, 54, 42, 15, 1]        # _stk_scorp_tele
-
-
 # ================================================ the two specials, MEASURED
-#
-# Both were animations with nothing behind them. Both are now numbers out of
-# the binary, and the path to each is written down so it can be checked.
 
 ## **The spear.** `t_do_scorpion_spear` (0x000515bc) writes 36 into the
 ## object's 0x1c and jumps to `t_do_zap` (0x000758bc), which indexes
 ## `_projectile_jumps` (0x00172694) with it -- and entry 36 of that table is
 ## `tl_do_scorpion_spear`. That hands to `t_new_scorpion_spear_proc`, which
-## zeroes 0x1c and 0x20, and then to **`t_new_spear_proc` (0x0007c830)**, where
-## the projectile is actually born:
+## zeroes 0x1c and 0x20, and then to **`t_new_spear_proc` (0x0007c830)**:
 ##
-##     obj->0x20 += 0x18        then multi_adjust_xy -- so the spear appears
-##                              0 in front of the fighter and 24 BELOW his y,
-##                              which is his chest
-##     obj->0x40 = 9            the projectile's own animation
-##     obj->0x20 = 0xfff        init_anirate's "never advance" sentinel: the
-##                              spear does not animate, which is why the rope
-##                              is cycled by the RENDERER instead
+##     obj->0x20 += 0x18        then multi_adjust_xy -- 0 in front of the
+##                              fighter and 24 BELOW his y, which is his chest
+##     obj->0x20 = 0xfff        init_anirate's "never advance" sentinel
 ##     obj->0x1c = 0xa0000      10.0 in 16.16
-##     set_proj_vel (0x00075d6c) negates that for a fighter facing left and
-##                              writes it into the part's x velocity
-##
-## So: **ten units a frame, dead level, from chest height, no gravity.**
+##     set_proj_vel (0x00075d6c) negates it for a fighter facing left
 const SPEAR_DY := 24                     ## measured, t_new_spear_proc
 const SPEAR_VX := int(10.0 * ONE)        ## measured, 0xa0000
 
 ## **The teleport punch is not a warp.** `t_do_scorp_tele` (0x00050c5c) writes
 ## 22 into 0x1c and jumps to `t_do_body_propell`, which indexes
-## `_propell_table` (0x00166f4c) -- twenty-nine function pointers, not numbers
-## -- and entry 22 is `tl_do_scorp_tele` (0x0004093c). That one calls
-## `face_opponent`, `flip_multi` and **`set_noedge`**, and then sets
+## `_propell_table` (0x00166f4c) -- twenty-nine function POINTERS -- and entry
+## 22 is `tl_do_scorp_tele` (0x0004093c). That calls `face_opponent`,
+## `flip_multi` and **`set_noedge`**, then sets
 ##
 ##     obj->0x1c = 0xa0000              10.0      forward
 ##     obj->0x20 = 0xa0000 - 0xd0000   -3.0       upward
 ##     obj->0x24 = that + 0x35000       0.3125    gravity
 ##
-## which is a jump: three up against 0.3125 down is 9.6 frames to the apex and
-## about 19 in the air, carrying him 192 units -- well past an opponent who
-## starts 110 away. `set_noedge` is why he may leave the arena on the way.
-## That is the move: he dives forward through the opponent and lands behind
-## him, and `_stk_scorp_tele` is the punch that lands with him.
+## Three up against 0.3125 down is 9.6 frames to the apex and about 19 in the
+## air, carrying him 192 units. `set_noedge` is why he may leave the arena;
+## `t_sctele_calla_1` (0x00040aa0) keeps him inside the camera instead.
 const TELE_VX := int(10.0 * ONE)         ## measured, 0xa0000
 const TELE_VY := -int(3.0 * ONE)         ## measured, 0xa0000 - 0xd0000
 const TELE_G := 0x5000                   ## measured, 0.3125
@@ -238,20 +211,19 @@ const TELE_G := 0x5000                   ## measured, 0.3125
 ## Which frame of the spear animation lets go of it.
 ##
 ## **Chosen.** `SCSPEAR` is four frames and the engine starts the projectile
-## from a state the animation does not describe. One in is where the arm is
-## out.
+## from a state the animation does not describe. One in is where the arm is out.
 const SPEAR_THROW_FRAME := 1
 
 ## Reeling the victim in. `t_scorp_rope_pull` (0x0007c5fc) is the puller's side
 ## and `t_tugged_in_by_spear` (0x0007c504) the victim's; the two rates they set
-## -- 3 and 8 -- are measured, the SPEED is not: the pull is a transfer between
-## two threads and the velocity comes from code that is not decompiled. Ten a
-## frame is the rope going back in as fast as it came out, and it stops where
-## `t_joy_hi_punch` stops calling itself far away, at 0x40 -- 64 units.
+## -- 3 and 8 -- are measured, the SPEED is not. Ten a frame is the rope going
+## back in as fast as it went out, and it stops at the engine's own idea of
+## close range.
 const PULL_VX := int(10.0 * ONE)         ## chosen -- the rope's own speed
-const PULL_STOP := 64                    ## measured, t_joy_hi_punch's 0x40
+const PULL_STOP := _Stk.CLOSE            ## measured, t_knee_check's 0x4a
 const RATE_PULL := 3                     ## measured, t_scorp_rope_pull
 const RATE_TUGGED := 8                   ## measured, t_tugged_in_by_spear
+
 
 ## How hard a hit pushes the victim back, and for how long.
 ##
@@ -262,13 +234,46 @@ const RATE_TUGGED := 8                   ## measured, t_tugged_in_by_spear
 ## does -- which is why T_HIT is now the hit animation's own length rather than
 ## a number.
 const KNOCKBACK := int(2.5 * ONE)
-## Half the gap a round opens with. **Still chosen, and now visibly so.**
+## Half the gap a round opens with.
 ##
-## At the old 1.946 scale 55 either side looked like a fight; at the real 1:1 it
-## puts two 78-unit-wide models 110 apart, which is close enough to touch. The
-## round-start code that holds the real number is not decompiled -- `init_players`
-## (0x0005a418) sets up the slots but the positions are not in it.
-var start_gap := 110
+## **Still chosen, but no longer arbitrary.** `init_players` (0x0005a418) puts
+## BOTH fighters at x = 0x12f and leaves `repell_func` to separate them, so the
+## file holds no opening distance to read. What it does hold is the scale of a
+## fight, and every number in it agrees:
+##
+##     get_x_dist         centre to centre, no boxes
+##     t_knee_check       inside 0x4a (74) a kick becomes a knee
+##     t_elbow_check      inside 0x4a a high punch becomes an elbow
+##     repell_func        pushes apart under 0x3c (60), leashes over 0x130
+##     _stk_nj_lo_punch   the shortest normal reaches X + 84
+##     _stk_nj_lokick     the longest reaches X + 109
+##
+## So a fight happens between roughly 60 and 130 units centre to centre. The
+## old 110 a side -- 220 apart -- was outside every one of those: with the box
+## corrected, nothing either fighter could throw would have reached, which is
+## exactly the "it does not hit him" this was.
+##
+## 50 a side opens the round at 100: inside a jab's 77 against a body that
+## starts 29 units before its centre, outside the 74 that would make it an
+## elbow, and well clear of the 60 where `repell_func` starts shoving.
+var start_gap := 50
+
+## **Where the feet are: `ground_ochar_ob` (0x0005527c), exactly.**
+##
+##     part->0x12 = G[0xac] - ochar_ground_offsets[character]
+##
+## which is FLOOR_Y minus the character's own height. This port grounded the
+## fighter at `FLOOR_Y - BOX_H` instead -- the HITBOX's height, 130 against
+## Scorpion's real 139 -- so every fighter stood nine units too low and every
+## strike box, which is placed at `Y + y`, was nine units off with him.
+func _ground_y() -> int:
+	return FLOOR_Y - GROUND_OFFSET[CHARACTER]
+
+
+## `repell_func`'s three numbers, all of them the binary's own.
+const NEAR_GAP := 0x3c                   ## 60 -- closer and they are shoved
+const FAR_GAP := 0x130                   ## 304 -- further and they are reeled
+const PUSH_VEL := 0x30000                ## 3.0 in 16.16
 
 ## The engine runs at a fixed rate and so does this: every duration in the
 ## fight is counted in FRAMES. Tying the tick to the display made every speed
@@ -318,6 +323,7 @@ const ANI_JUMP := 22
 const ANI_JUMPFLIP := 26
 const ANI_HIT := 28
 const ANI_RUN := 70
+const ANI_SPEAR := 82
 
 ## MV_* -> animation id. There is no SCJUMPPUNCH: the flip punch is the one
 ## airborne punch Scorpion has and stands in for both, which is a substitution
@@ -438,7 +444,7 @@ const GROUND_OFFSET := [
 ## dragged across the floor is something that happens over many frames and a
 ## reaction is over when its animation is.
 enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT, SPECIAL,
-	SPEARED }
+	SPEARED, THROWN }
 
 ## The keyboard, the same map the C build uses: player one is the left hand
 ## plus U I O J K L, player two is the arrows and the numeric keypad.
@@ -468,6 +474,10 @@ class Fight extends RefCounted:
 	var connected := false
 	var wins := 0
 	var prev_buttons := 0
+	## Was the stick held AWAY from the opponent when the button went down?
+	## `is_stick_away` (0x00055df0) is what turns a high kick into a
+	## roundhouse and a low kick into a sweep.
+	var stick_away := false
 	var table: Array = BT_STANCE
 	## The engine's animation clock, from `init_anirate` and `next_anirate`:
 	## `ani_rate` game frames per animation frame, counted down in `ani_count`.
@@ -638,7 +648,7 @@ func reset() -> void:
 		@warning_ignore("integer_division")
 		var mid := (WALL_L + WALL_R) / 2
 		f.x = (mid + (start_gap if i == 1 else -start_gap)) * ONE
-		f.y = (FLOOR_Y - BOX_H) * ONE
+		f.y = _ground_y() * ONE
 		f.vx = 0
 		f.vy = 0
 		f.g = 0
@@ -742,35 +752,72 @@ func _move_frames(mv: int) -> int:
 	return _ani_length(MOVE_ANI[mv], maxi(1, RATE_STANCE + rate_bias))
 
 
+## Which strike id this fighter's current move actually produces.
+##
+## **A button is not a move.** `t_joy_hi_kick` asks `is_stick_away` first and
+## goes to `t_joy_roundhouse` if the stick is back; otherwise it goes through
+## `t_knee_check`, which asks `get_x_dist` and substitutes a KNEE inside 74
+## units. `t_joy_lo_kick` does the same with the SWEEP, and every high punch
+## runs through `t_elbow_check` with the same 74. So two buttons make six
+## attacks, and the fight was only ever producing two of them.
+##
+## `dist` is centre to centre, which is exactly what `get_x_dist` (0x0002f3a0)
+## returns: |other.x - my.x|, no boxes involved.
+func _strike_id(f: Fight, dist: int, away: bool) -> int:
+	if not MOVE_STRIKE.has(f.move):
+		return -1
+	var id: int = MOVE_STRIKE[f.move]
+	match f.move:
+		MV_HI_KICK:
+			if away:
+				return _Stk.ROUNDH
+			if dist <= _Stk.CLOSE:
+				return _Stk.KNEE
+		MV_LO_KICK:
+			if away:
+				return _Stk.SWEEP
+			if dist <= _Stk.CLOSE:
+				return _Stk.KNEE
+		MV_HI_PUNCH:
+			if dist <= _Stk.CLOSE:
+				return _Stk.ELBOW
+	return id
+
+
 ## The strike record for whatever this fighter is doing, or an empty array.
-func _strike_of(f: Fight) -> Array:
+func _strike_of(f: Fight, other: Fight = null) -> Array:
 	if f.st == St.SPECIAL:
 		# **The spear is not here.** `_stk_scorp_spear` belongs to the
 		# projectile, which is its own object with its own box -- see
-		# `_spear_box`. Putting it on Scorpion gave the throw an invisible
-		# 22-unit punch and gave the spear itself nothing.
+		# `_spear_box`.
 		if f.special == _Moves.SP_TELEPUNCH:
-			return STK_TELE
+			return _Stk.STK[_Stk.SCORP_TELE]
 		return []
-	if f.st == St.ATTACK and STRIKE.has(f.move):
-		return STRIKE[f.move]
-	return []
+	if f.st != St.ATTACK:
+		return []
+	var dist := 0
+	var away := false
+	if other != null:
+		dist = absi(other.xi() - f.xi())
+		away = f.stick_away
+	var id := _strike_id(f, dist, away)
+	return [] if id < 0 else _Stk.STK[id]
 
 
 ## Where a strike's box sits in the world, as [x0, y0, x1, y1] in engine units
 ## with y growing DOWNWARD, which is the engine's own sense.
 ##
-## The record's x is the distance IN FRONT of the fighter, so facing mirrors it
-## about his origin rather than negating it -- a box 77 wide starting 77 ahead
-## becomes one ending 77 behind.
+## **This is `strike_check_regs` (0x00059280), line for line.** x is the
+## distance to the FAR edge and w is the width measured BACK toward the
+## fighter, which is the opposite of what this function used to assume.
 func _strike_box(f: Fight, stk: Array) -> Array:
 	var x0: int
 	if f.facing > 0:
-		x0 = f.xi() + stk[STK_X]
+		x0 = f.xi() + int(stk[STK_X]) - int(stk[STK_W])
 	else:
-		x0 = f.xi() - stk[STK_X] - stk[STK_W]
-	var y0: int = f.yi() + stk[STK_Y]
-	return [x0, y0, x0 + stk[STK_W], y0 + stk[STK_H]]
+		x0 = f.xi() - int(stk[STK_X])
+	var y0: int = f.yi() + int(stk[STK_Y])
+	return [x0, y0, x0 + int(stk[STK_W]), y0 + int(stk[STK_H])]
 
 
 ## A fighter's own body box, from `_FrameInfo2`. See BOX_W.
@@ -809,7 +856,7 @@ func _special_asked(f: Fight, raw: int, airborne: bool) -> Dictionary:
 
 
 func _think(f: Fight, other: Fight, raw: int) -> void:
-	var airborne := (f.yi() + BOX_H) < FLOOR_Y
+	var airborne := f.yi() < _ground_y()
 
 	# Face the opponent whenever both feet are down. The engine does this in
 	# t_walk_flip_check, which is not decompiled; this is the obvious rule and
@@ -859,6 +906,22 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 						audio.land()
 				return
 			if f.timer == 0:
+				# **The rope outlives the throw.** Four frames of animation
+				# against a flight of twenty and a drag after it: letting the
+				# clip end the state put Scorpion back in his stance with his
+				# spear still in the air.
+				if f.special == _Moves.SP_SPEAR 						and (f.sp_live or other.pulled_by == f):
+					f.st = St.THROWN
+					f.vx = 0
+					return
+				f.st = St.STANCE
+				f.table = BT_STANCE
+				f.special = 0
+				f.special_name = ""
+			return
+		St.THROWN:
+			f.vx = 0
+			if not f.sp_live and other.pulled_by != f:
 				f.st = St.STANCE
 				f.table = BT_STANCE
 				f.special = 0
@@ -886,7 +949,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.vy = 0
 				f.g = 0
 				f.vx = 0
-				f.y = (FLOOR_Y - BOX_H) * ONE
+				f.y = _ground_y() * ONE
 				f.st = St.STANCE
 				f.table = BT_STANCE
 				if audio:
@@ -894,6 +957,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			else:
 				var b := _pressed_button(f, raw)
 				if b >= 0 and f.table[b]:
+					f.stick_away = (raw & dir_b) != 0
 					_start_attack(f, f.table[b])
 			return
 
@@ -962,6 +1026,9 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 
 	if btn >= 0 and f.table[btn]:
 		var mv: int = f.table[btn]
+		# `is_stick_away`, read once when the button goes down rather than
+		# every frame: which move this is, is decided at that moment.
+		f.stick_away = (raw & dir_b) != 0
 		if mv == MV_BLOCK or mv == MV_DUCK_BLOCK:
 			f.st = St.BLOCK
 			f.timer = 2
@@ -986,7 +1053,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 func _resolve_hits(a: Fight, b: Fight) -> void:
 	if a.connected:
 		return
-	var stk := _strike_of(a)
+	var stk := _strike_of(a, b)
 	if stk.is_empty():
 		return
 
@@ -1009,7 +1076,7 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		int(stk[STK_LEVEL]) == 1 or b.table == BT_DUCK)
 	if blocked:
 		b.health -= 1                        # chip
-		b.vx = KNOCKBACK * away
+		b.vx = int(_react_vx(stk) * ONE) * away
 		if audio:
 			audio.block()
 		return
@@ -1022,9 +1089,13 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	b.timer = _ani_length(hit_ani, maxi(1, RATE_STANCE + rate_bias))
 	b.timer_total = b.timer
 	b.table = BT_NULL                        # how the engine takes input away
-	# Harder hits push further. The engine takes the reaction's velocity from
-	# the move; this scales one number by the damage, which is a stand-in.
-	b.vx = KNOCKBACK * away * (2 if dmg >= 24 else 1)
+	# **The reaction's own velocity, out of the reaction it names.** The strike
+	# record's fifth word carries the index into `_reaction_table`, and the
+	# `t_r_*` proc there either calls `away_x_vel` with a literal or does not
+	# call it at all. See umk3_strikes.gd's REACT_VX: a jab pushes nobody, a
+	# high kick pushes 4.5 a frame. What was here was one invented number
+	# doubled above 24 damage.
+	b.vx = int(_react_vx(stk) * ONE) * away
 	if audio:
 		audio.hit(dmg >= 24, stk[STK_Y] < 40)
 	if b.health <= 0:
@@ -1032,6 +1103,11 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		a.wins += 1
 		if audio:
 			audio.voice()
+
+
+## How far back this strike's reaction throws the victim, in units a frame.
+static func _react_vx(stk: Array) -> float:
+	return float(_Stk.REACT_VX.get(int(stk[_Stk.REACT]), 0.0))
 
 
 ## Let go of the spear. `t_new_spear_proc`, transcribed.
@@ -1054,7 +1130,8 @@ func _throw_spear(f: Fight) -> void:
 func _spear_box(f: Fight) -> Array:
 	var x0: int = f.sp_x >> FX
 	var y0: int = f.sp_y >> FX
-	return [x0, y0, x0 + STK_SPEAR[STK_W], y0 + STK_SPEAR[STK_H]]
+	var s: Array = _Stk.STK[_Stk.SCORP_SPEAR]
+	return [x0, y0, x0 + int(s[STK_W]), y0 + int(s[STK_H])]
 
 
 ## One frame of a spear in flight.
@@ -1084,14 +1161,14 @@ func _step_spear(f: Fight, other: Fight) -> void:
 			audio.block()
 		return
 
-	other.health -= STK_SPEAR[STK_DMG]
+	other.health -= int(_Stk.STK[_Stk.SCORP_SPEAR][STK_DMG])
 	other.buf.clear()
 	other.table = BT_NULL
 	other.st = St.SPEARED
 	other.pulled_by = f
 	other.vy = 0
 	other.g = 0
-	other.y = (FLOOR_Y - BOX_H) * ONE       # ground_him
+	other.y = _ground_y() * ONE             # ground_him
 	if audio:
 		audio.hit(false, false)
 	if other.health <= 0:
@@ -1101,6 +1178,95 @@ func _step_spear(f: Fight, other: Fight) -> void:
 		other.pulled_by = null
 		other.timer = _ani_length(ANI_HIT, maxi(1, RATE_STANCE + rate_bias))
 		other.timer_total = other.timer
+
+
+## `repell_func`, ported. `DisplayUpdate` calls it FIRST, before gravity and
+## before the walls, so what it does to the two velocities is what everything
+## after it then corrects.
+##
+## **It is two rules at opposite ends of the same measurement**, and neither
+## build had either of them:
+##
+##     |dx| <= 0x3c   (60)    driven APART at 3.0 a frame
+##     |dx| >  0x130  (304)   pulled together by half the excess, both moving
+##
+## The push is why two fighters cannot stand inside each other -- which they
+## were doing here, walking through one another until an elbow had nothing in
+## front of it to hit. The pull is why a two-player fight stays on one screen:
+## past 304 units the excess is halved out of the gap every frame, so the pair
+## converges rather than one being dragged.
+##
+## Between the two it only arbitrates the velocities: inside 0x3f, a fighter
+## walking INTO the other has his speed halved, and if both are closing they
+## both stop.
+##
+## **What is simplified:** the original gates all of this on a vertical overlap
+## test using two per-fighter fields (`Pp + 0x40`, and the parts' 0x38 and
+## 0x40) that this port does not model, and on a countdown at `G + 0x456` whose
+## writer has not been found. Here the gate is "both on the ground", which is
+## the case those fields describe in an ordinary fight.
+func _repell() -> void:
+	var a := fighters[0]
+	var b := fighters[1]
+	if a.yi() < _ground_y() or b.yi() < _ground_y():
+		return
+
+	var x1 := a.xi()
+	var x2 := b.xi()
+	var adx := absi(x2 - x1)
+	var vx1 := a.vx
+	var vx2 := b.vx
+
+	if adx <= NEAR_GAP:
+		# apart:
+		if x1 >= x2:
+			vx1 = PUSH_VEL
+			vx2 = -PUSH_VEL
+		else:
+			vx1 = -PUSH_VEL
+			vx2 = PUSH_VEL
+	elif adx <= 0x3f:
+		# arbitrate_1 / arbitrate_2, in that order: whichever fighter is moving
+		# toward the other drags both, and two closing fighters stop.
+		if vx1 != 0 and ((vx1 < 0 and x1 > x2) or (vx1 > 0 and x1 < x2)):
+			if (vx1 < 0 and vx2 > 0) or (vx1 > 0 and vx2 < 0):
+				vx1 = 0
+				vx2 = 0
+			else:
+				vx1 = vx1 >> 1
+				vx2 = vx1
+		elif vx2 != 0 and ((vx2 < 0 and x1 < x2) or (vx2 > 0 and x1 > x2)):
+			if (vx2 < 0 and vx1 > 0) or (vx2 > 0 and vx1 < 0):
+				vx1 = 0
+				vx2 = 0
+			else:
+				vx2 = vx2 >> 1
+				vx1 = vx2
+
+	# check: the leash. `set_noedge` is the same opt-out the walls use, so a
+	# teleport in flight is not reeled in either.
+	if adx > FAR_GAP and not a.noedge and not b.noedge:
+		var excess := adx - FAR_GAP
+		# **The clamps happen whether or not the move does** -- they sit before
+		# the branch that skips the rest in the original, and moving them after
+		# it would be tidier and wrong.
+		var shift := 0
+		if x1 >= x2:
+			vx2 = maxi(vx2, 0)
+			vx1 = mini(vx1, 0)
+			if excess > 3:
+				shift = -(excess >> 1)
+		else:
+			vx2 = mini(vx2, 0)
+			vx1 = maxi(vx1, 0)
+			if excess > 3:
+				shift = excess >> 1
+		if shift != 0:
+			a.x += shift * ONE
+			b.x -= shift * ONE
+
+	a.vx = vx1
+	b.vx = vx2
 
 
 ## One 60 Hz frame.
@@ -1142,6 +1308,10 @@ func tick() -> void:
 	_step_spear(fighters[0], fighters[1])
 	_step_spear(fighters[1], fighters[0])
 
+	# **First, before gravity and before the walls** -- which is where
+	# `DisplayUpdate` calls it.
+	_repell()
+
 	for f in fighters:
 		# **gravity_n_bounds, transcribed**: gravity adds into vy, and x is
 		# clamped against G[0xb0] + 0x3a and G[0xb4] + 0x15f. In the C build
@@ -1162,8 +1332,8 @@ func tick() -> void:
 
 		# The floor. gravity_n_bounds knows about walls, not about the ground;
 		# the engine grounds a fighter in code that has not been read.
-		if f.yi() + BOX_H > FLOOR_Y:
-			f.y = (FLOOR_Y - BOX_H) * ONE
+		if f.yi() > _ground_y():
+			f.y = _ground_y() * ONE
 			if f.vy > 0:
 				f.vy = 0
 
@@ -1186,6 +1356,14 @@ func _ani_for(f: Fight) -> Array:
 				if int(s["id"]) == f.special:
 					return [int(s["ani"]), -1]
 			return [ANI_STANCE, -1]
+		St.THROWN:
+			# `t_scorp_rope_pull` (0x0007c5fc) calls `get_char_ani2` with
+			# index 9 -- and entry 9 of the ninjas' SECOND animation table
+			# (0x001598b0) is SCSPEAR1..4, the same four frames as the throw.
+			# So the thrower keeps playing the spear clip the whole time the
+			# rope is out instead of snapping back to a stance, which is what
+			# it was doing.
+			return [ANI_SPEAR, RATE_PULL]
 		St.ATTACK:
 			return [MOVE_ANI[f.move], -1]
 		St.HIT:
@@ -1253,7 +1431,7 @@ func _scene_y(f: Fight) -> float:
 	# No correction for where the model's feet sit: the skinned character's
 	# lowest vertex is at -3.9 and Graveyard's cobbles are a plane at exactly
 	# y = 0, so the model already stands on the floor at the origin.
-	return float(FLOOR_Y - (f.yi() + BOX_H)) * scale_units
+	return float(_ground_y() - f.yi()) * scale_units
 
 
 func _place() -> void:
@@ -1386,7 +1564,7 @@ func _draw_boxes() -> void:
 				Color(1.0, 0.25, 0.2))
 			r.visible = true
 			continue
-		var stk := _strike_of(f)
+		var stk := _strike_of(f, fighters[1 - i])
 		if stk.is_empty():
 			r.visible = false
 			continue
@@ -1425,10 +1603,20 @@ func _wire_box(x0: float, y0: float, x1: float, y1: float,
 	return am
 
 
+## What this fighter's attack actually resolved to -- the roundhouse, not the
+## high kick that asked for it.
+func _attack_name(f: Fight, which: int) -> String:
+	if f.st != St.ATTACK:
+		return ""
+	var other: Fight = fighters[1 - which]
+	var id := _strike_id(f, absi(other.xi() - f.xi()), f.stick_away)
+	return _Stk.NAME[id] if id >= 0 else MOVE_NAME[f.move]
+
+
 ## One line per fighter, for the HUD.
 func status() -> String:
 	var names := ["STANCE", "WALK-F", "WALK-B", "DUCK", "BLOCK", "JUMP",
-		"ATTACK", "HIT", "SPECIAL", "SPEARED"]
+		"ATTACK", "HIT", "SPECIAL", "SPEARED", "THROWN"]
 	var out := "%d fps   pose %.1f ms   tick %d
 " % [
 		Engine.get_frames_per_second(),
@@ -1438,7 +1626,6 @@ func status() -> String:
 		var f := fighters[i]
 		out += "P%d %3d hp  %-7s %-11s  x %5d  y %5d  %s\n" % [
 			i + 1, f.health, names[f.st],
-			f.special_name if f.st == St.SPECIAL else (
-				MOVE_NAME[f.move] if f.st == St.ATTACK else ""),
+			f.special_name if f.st == St.SPECIAL else _attack_name(f, i),
 			f.xi(), f.yi(), "->" if f.facing > 0 else "<-"]
 	return out
