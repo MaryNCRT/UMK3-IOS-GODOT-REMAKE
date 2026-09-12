@@ -248,6 +248,15 @@ func read(player: int) -> int:
 	return w
 
 
+## Which glyph set to DRAW for a player, which is not the same question as
+## what he is holding: with nothing plugged in the pad column still has to say
+## something, and Godot's button numbering is Xbox-lettered whatever is
+## connected -- so an Xbox face is the honest picture of button 0.
+func pad_glyphs(player: int) -> String:
+	var k := pad_kind(player)
+	return "xbox" if k == KB else k
+
+
 ## Which kind of pad player `player` is holding, as a glyph-set name.
 func pad_kind(player: int) -> String:
 	var dev: int = device[player]

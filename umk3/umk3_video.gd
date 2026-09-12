@@ -49,6 +49,9 @@ const AA_SCALE := [1.0, 1.0, 1.0, 1.0, 2.0]
 const FPS := [0, 30, 60, 75, 90, 120, 144, 165, 180, 200, 240]
 
 var size := Vector2i(1280, 720)
+## Which physical display. On one monitor it is always 0 and the row still
+## shows, because a machine can grow a second screen between two runs.
+var screen := 0
 var mode := Mode.WINDOWED
 var aa := 0
 var vsync := true
@@ -60,16 +63,36 @@ func _init() -> void:
 
 
 ## Every size worth offering on THIS machine: the list above, cut off at the
-## screen, with the screen's own size on the end.
+## CHOSEN screen, with that screen's own size on the end. A 4K monitor beside
+## a 1080p one should not be offering 1080p's list.
 func sizes() -> Array:
-	var screen := DisplayServer.screen_get_size()
+	var full := DisplayServer.screen_get_size(_screen())
 	var out: Array = []
 	for s in SIZES:
-		if s.x <= screen.x and s.y <= screen.y:
+		if s.x <= full.x and s.y <= full.y:
 			out.append(s)
-	if not out.has(screen):
-		out.append(screen)
+	if not out.has(full):
+		out.append(full)
 	return out
+
+
+## The chosen display, clamped -- a monitor can be unplugged between two runs
+## and a saved index that no longer exists must not black the game out.
+func _screen() -> int:
+	return clampi(screen, 0, maxi(DisplayServer.get_screen_count() - 1, 0))
+
+
+func screens() -> int:
+	return maxi(DisplayServer.get_screen_count(), 1)
+
+
+func screen_name() -> String:
+	var i := _screen()
+	var sz := DisplayServer.screen_get_size(i)
+	var hz := DisplayServer.screen_get_refresh_rate(i)
+	if hz > 0.0:
+		return "monitor %d  (%d x %d @ %d)" % [i + 1, sz.x, sz.y, int(hz)]
+	return "monitor %d  (%d x %d)" % [i + 1, sz.x, sz.y]
 
 
 ## Put every setting into effect. Safe to call as often as you like.
@@ -81,8 +104,16 @@ func apply() -> void:
 	# nothing".
 	var root := Engine.get_main_loop().root as Window
 
-	# The window first: an exclusive fullscreen swap resizes the viewport, and
-	# the buffer settings should land on the size that survives it.
+	# **The monitor is chosen before anything else.** Moving a window between
+	# screens while it is fullscreen is not something every driver takes
+	# kindly to, so it goes back to windowed, moves, and then goes fullscreen
+	# again on the display it is now on.
+	if DisplayServer.window_get_current_screen() != _screen():
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+		DisplayServer.window_set_current_screen(_screen())
+
+	# The window: an exclusive fullscreen swap resizes the viewport, and the
+	# buffer settings should land on the size that survives it.
 	match mode:
 		Mode.FULLSCREEN:
 			DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS,
@@ -113,9 +144,13 @@ func apply() -> void:
 ## the menu says so rather than silently ignoring the row.
 func _resize() -> void:
 	DisplayServer.window_set_size(size)
-	var screen := DisplayServer.screen_get_size()
-	var at := (screen - size) / 2
-	DisplayServer.window_set_position(Vector2i(maxi(at.x, 0), maxi(at.y, 0)))
+	# Centred on the CHOSEN screen, which on a multi-monitor desktop is an
+	# offset into the virtual desktop rather than a position on one display.
+	var i := _screen()
+	var org := DisplayServer.screen_get_position(i)
+	var full := DisplayServer.screen_get_size(i)
+	var at := org + (full - size) / 2
+	DisplayServer.window_set_position(at)
 
 
 func fps_name() -> String:
@@ -124,7 +159,7 @@ func fps_name() -> String:
 
 func size_name() -> String:
 	if mode == Mode.FULLSCREEN:
-		var s := DisplayServer.screen_get_size()
+		var s := DisplayServer.screen_get_size(_screen())
 		return "%d x %d  (screen)" % [s.x, s.y]
 	return "%d x %d" % [size.x, size.y]
 
@@ -135,6 +170,7 @@ func save_cfg() -> void:
 	c.set_value("video", "width", size.x)
 	c.set_value("video", "height", size.y)
 	c.set_value("video", "mode", int(mode))
+	c.set_value("video", "screen", screen)
 	c.set_value("video", "aa", aa)
 	c.set_value("video", "vsync", vsync)
 	c.set_value("video", "fps", fps_cap)
@@ -150,6 +186,7 @@ func load_cfg() -> void:
 	size = Vector2i(int(c.get_value("video", "width", size.x)),
 		int(c.get_value("video", "height", size.y)))
 	mode = int(c.get_value("video", "mode", int(mode))) as Mode
+	screen = int(c.get_value("video", "screen", screen))
 	aa = int(c.get_value("video", "aa", aa))
 	vsync = bool(c.get_value("video", "vsync", vsync))
 	fps_cap = int(c.get_value("video", "fps", fps_cap))

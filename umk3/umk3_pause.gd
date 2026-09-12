@@ -1,13 +1,28 @@
 ## The pause menu. **A placeholder, and it says so on the screen.**
 ##
-## What it is for right now is the one thing the fight cannot do without a
+## What it is for right now is the two things the fight cannot do without a
 ## menu: choosing a device and rebinding it. The ten bits are the engine's and
 ## cannot move; which key or button produces each is ours, and this is where a
 ## player changes it.
 ##
+## ## Both players on one screen
+##
+## The controls page is laid out the way a fighting game's key config has been
+## laid out since the arcades: **player one down the left, player two down the
+## right, side by side**, so there is no hidden second page and nothing to
+## discover. The cursor moves between the columns with left and right.
+##
+## ## Three ways to work it, and all three do the same thing
+##
+## Mouse: click a cell to rebind it, click the device row to cycle it.
+## Keyboard: arrows or WASD to move, Enter to rebind, R for defaults.
+## Pad: d-pad to move, the bottom face button to pick, the right one to go
+## back. A menu that can only be OPENED with a pad and then only be worked with
+## a keyboard is worse than no menu.
+##
 ## ## How rebinding works
 ##
-## Pick a row, press a key or a pad button, and it is taken. The next input
+## Pick a cell, press a key or a pad button, and it is taken. The next input
 ## event is captured raw -- no action map, no InputMap -- because the fight
 ## reads raw keys and raw buttons and a menu that bound anything else would be
 ## binding something the fight never looks at.
@@ -20,18 +35,12 @@
 ##
 ## ## Devices
 ##
-## The top row of the page is the device, and it is per player. A pad can only
-## belong to one of them -- see umk3_input.gd's `detect` -- while the keyboard
-## is always live for both, so two people can start playing without unplugging
-## anything. The glyphs follow whatever each player ends up holding: a
-## DualSense shows crosses and circles, an Xbox pad shows A and B, a Pro
-## Controller shows Nintendo's own swapped pair.
-##
-## ## Driving it with a pad
-##
-## Start opens and closes it, the d-pad moves, the bottom face button picks and
-## the right one goes back. A menu that can only be opened with a pad and then
-## only be worked with a keyboard is worse than no menu.
+## The top row of each column is the device. A pad can only belong to one of
+## them -- see umk3_input.gd's `detect` -- while the keyboard is always live
+## for both, so two people can start playing without unplugging anything. The
+## glyphs follow whatever each player ends up holding: a DualSense shows
+## crosses and circles, an Xbox pad shows A and B, a Pro Controller shows
+## Nintendo's own swapped pair.
 extends Control
 
 const _Glyphs := preload("res://umk3/umk3_glyphs.gd")
@@ -51,9 +60,9 @@ var glyphs = null
 
 var page := Page.ROOT
 var sel := 0
+## Which column the cursor is in on the controls page.
 var cfg_player := 0
-## Which bit is waiting for a key, or -1. The device row is not a bit and
-## cannot be captured into.
+## Which bit is waiting for a key, or -1. The device row is not a bit.
 var capturing := -1
 ## Capture into the pad column rather than the keyboard one.
 var capture_pad := false
@@ -65,9 +74,15 @@ var suspended := false
 const ROOT_ITEMS := ["RESUME", "CONTROLS", "VIDEO OPTIONS", "RESTART ROUND",
 	"QUIT TO MENU"]
 
-## Row 0 of the controls page is the device; the ten bits follow it.
+## Row 0 of a column is the device; the ten bits follow it.
 const ROW_DEVICE := 0
+const BITS_FROM := 1
 const ROWS := _Input.N + 1
+
+## What the mouse can land on, rebuilt every time the page is drawn. Immediate
+## mode: the rectangles a click is tested against are the ones just painted, so
+## they cannot drift from what is on the screen.
+var _hit: Array = []
 
 
 func _ready() -> void:
@@ -131,6 +146,20 @@ func _input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 				queue_redraw()
 			return
+		# A click somewhere else means "not that one after all" -- and then it
+		# falls through, so the click still lands where it was aimed.
+		if event is InputEventMouseButton and event.pressed:
+			capturing = -1
+		else:
+			return
+
+	if event is InputEventMouseMotion:
+		queue_redraw()
+		return
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_click(get_local_mouse_position())
+		get_viewport().set_input_as_handled()
+		queue_redraw()
 		return
 
 	var act := ""
@@ -152,15 +181,16 @@ func _input(event: InputEvent) -> void:
 		match act:
 			"up":    sel = posmod(sel - 1, ROWS)
 			"down":  sel = posmod(sel + 1, ROWS)
-			"left":  _sideways(-1)
-			"right": _sideways(1)
-			"swap":  _swap_player()
+			"left", "right":
+				# Left and right walk between the two columns, which is what
+				# they can only mean on a page with both players side by side.
+				cfg_player = 1 - cfg_player
 			"tab":   capture_pad = not capture_pad
 			"ok":
 				if sel == ROW_DEVICE:
-					_sideways(1)
+					_cycle_device(1)
 				else:
-					capturing = sel - 1
+					capturing = sel - BITS_FROM
 			"reset":
 				input.reset()
 				input.save_cfg()
@@ -171,28 +201,46 @@ func _input(event: InputEvent) -> void:
 	queue_redraw()
 
 
-## Left and right mean the device on the device row and the player anywhere
-## else, which is the only place on the page where a direction is ambiguous.
-func _sideways(step: int) -> void:
-	if sel == ROW_DEVICE:
-		if input:
-			input.cycle(cfg_player, step)
+func _cycle_device(step: int) -> void:
+	if input:
+		input.cycle(cfg_player, step)
+
+
+## A click, against whatever was last painted.
+func _click(at: Vector2) -> void:
+	for h in _hit:
+		if not (h["rect"] as Rect2).has_point(at):
+			continue
+		match str(h["what"]):
+			"root":
+				sel = int(h["row"])
+				_activate()
+			"row":
+				cfg_player = int(h["player"])
+				sel = int(h["row"])
+				if int(h["col"]) < 0:
+					return
+				if sel == ROW_DEVICE:
+					_cycle_device(1)
+				else:
+					capture_pad = int(h["col"]) == 1
+					capturing = sel - BITS_FROM
+			"defaults":
+				input.reset()
+				input.save_cfg()
+			"back":
+				page = Page.ROOT
+				sel = 1
+				input.save_cfg()
 		return
-	_swap_player()
-
-
-func _swap_player() -> void:
-	cfg_player = 1 - cfg_player
-	capturing = -1
 
 
 func _from_key(k: int) -> String:
 	match k:
 		KEY_UP, KEY_W:      return "up"
 		KEY_DOWN, KEY_S:    return "down"
-		KEY_LEFT:           return "left"
-		KEY_RIGHT:          return "right"
-		KEY_A, KEY_D:       return "swap"
+		KEY_LEFT, KEY_A:    return "left"
+		KEY_RIGHT, KEY_D:   return "right"
 		KEY_TAB:            return "tab"
 		KEY_R:              return "reset"
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE: return "ok"
@@ -242,6 +290,7 @@ func _draw() -> void:
 	var vp := get_viewport_rect().size
 	draw_rect(Rect2(Vector2.ZERO, vp), Color(0, 0, 0, 0.72), true)
 	var font := ThemeDB.fallback_font
+	_hit.clear()
 	if page == Page.ROOT:
 		_draw_root(vp, font)
 	else:
@@ -249,6 +298,7 @@ func _draw() -> void:
 
 
 func _draw_root(vp: Vector2, font: Font) -> void:
+	var mouse := get_local_mouse_position()
 	var x := vp.x * 0.5
 	var y := vp.y * 0.30
 	_title(font, Vector2(x, y), "PAUSED")
@@ -257,118 +307,159 @@ func _draw_root(vp: Vector2, font: Font) -> void:
 		HORIZONTAL_ALIGNMENT_LEFT, 236, 13, Color(0.6, 0.6, 0.65))
 	y += 44.0
 	for i in ROOT_ITEMS.size():
-		var on := i == sel
+		var r := Rect2(x - 130, y - 17, 260, 24)
+		_hit.append({"rect": r, "what": "root", "row": i, "player": 0,
+			"col": -1})
+		var on: bool = i == sel or r.has_point(mouse)
 		if on:
-			draw_rect(Rect2(x - 130, y - 17, 260, 24),
-				Color(0.9, 0.75, 0.15, 0.22), true)
+			draw_rect(r, Color(0.9, 0.75, 0.15, 0.22), true)
 		draw_string(font, Vector2(x - 118, y), ROOT_ITEMS[i],
 			HORIZONTAL_ALIGNMENT_LEFT, 236, 17,
 			Color(1, 0.88, 0.3) if on else Color(0.82, 0.82, 0.85))
 		y += 30.0
 	y += 16.0
 	draw_string(font, Vector2(x - 130, y),
-		"W/S or d-pad move    ENTER or A pick    ESC or START back",
+		"click, or W/S and ENTER, or the d-pad and A",
 		HORIZONTAL_ALIGNMENT_LEFT, 420, 12, Color(0.5, 0.5, 0.55))
 
 
+## Both players, side by side, the way a key config has always looked.
+const COL_W := 330.0
+const ROW_H := 24.0
+const LABEL_W := 116.0
+const CELL_W := 96.0
+
+
 func _draw_controls(vp: Vector2, font: Font) -> void:
-	var w := 444.0
-	var h := 26.0 * float(ROWS) + 130.0
-	var x := maxf(12.0, vp.x * 0.5 - w * 0.5) + 22.0
-	var y := maxf(34.0, (vp.y - h) * 0.45) + 34.0
-	# A panel of its own: the debug read-out lives at the bottom of the screen
-	# and the rows would otherwise be read through it.
-	draw_rect(Rect2(x - 22, y - 34, w, h), Color(0.04, 0.04, 0.06, 0.95), true)
-	draw_rect(Rect2(x - 22, y - 34, w, h), Color(1, 0.85, 0.2, 0.35), false, 1.0)
-	_title(font, Vector2(x - 22 + w * 0.5, y), "CONTROLS")
-	y += 34.0
+	var mouse := get_local_mouse_position()
+	var w := COL_W * 2.0 + 56.0
+	var h := ROW_H * float(ROWS) + 168.0
+	var px := maxf(8.0, (vp.x - w) * 0.5)
+	var py := maxf(8.0, (vp.y - h) * 0.42)
+	# Opaque: the debug read-out is a Label behind this and a panel you can
+	# read the frame counter through is not a panel.
+	draw_rect(Rect2(px, py, w, h), Color(0.04, 0.04, 0.06, 1.0), true)
+	draw_rect(Rect2(px, py, w, h), Color(1, 0.85, 0.2, 0.35), false, 1.0)
 
-	# Which player. Arrows on both sides because this is the control a player
-	# is most likely to miss, and missing it is what "there is no player two"
-	# looks like.
-	var who := "< PLAYER %d >" % (cfg_player + 1)
-	draw_string(font, Vector2(x, y), who, HORIZONTAL_ALIGNMENT_LEFT, -1, 16,
-		Color(1, 0.88, 0.3))
-	draw_string(font, Vector2(x + 140, y), "A/D or left/right swaps player",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.55, 0.55, 0.6))
-	y += 22.0
-	draw_string(font, Vector2(x, y),
-		"TAB %s   ENTER rebind   R defaults   ESC back"
-		% ("column: PAD" if capture_pad else "column: KEY"),
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.5, 0.5, 0.55))
-	y += 22.0
+	_title(font, Vector2(px + w * 0.5, py + 34.0), "KEY CONFIG")
+	var top := py + 52.0
 
-	draw_string(font, Vector2(x + 150, y), "KEYBOARD", HORIZONTAL_ALIGNMENT_LEFT,
-		-1, 12, Color(0.55, 0.55, 0.6))
-	draw_string(font, Vector2(x + 280, y), "PAD", HORIZONTAL_ALIGNMENT_LEFT,
-		-1, 12, Color(0.55, 0.55, 0.6))
-	y += 10.0
+	for p in 2:
+		var cx := px + 28.0 + float(p) * COL_W
+		var head := "PLAYER %d" % (p + 1)
+		var hw := font.get_string_size(head, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
+		draw_string(font, Vector2(cx + (COL_W - 28.0 - hw) * 0.5, top + 16.0),
+			head, HORIZONTAL_ALIGNMENT_LEFT, -1, 16,
+			Color(0.55, 0.8, 1.0) if p == 0 else Color(1.0, 0.55, 0.55))
+		draw_string(font, Vector2(cx + LABEL_W, top + 32.0), "KEY",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.5, 0.5, 0.55))
+		draw_string(font, Vector2(cx + LABEL_W + CELL_W, top + 32.0), "PAD",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.5, 0.5, 0.55))
 
-	var kind: String = input.pad_kind(cfg_player) if input else "kb"
+		# The PICTURES fall back to Xbox when nothing is plugged in; what he is
+		# actually holding is the separate line in the device row.
+		var kind: String = input.pad_glyphs(p) if input else "xbox"
+		var y := top + 38.0
+		for row in ROWS:
+			var here: bool = p == cfg_player and row == sel
+			var full := Rect2(cx - 6.0, y, LABEL_W + CELL_W * 2.0 - 4.0, ROW_H)
+			if here or full.has_point(mouse):
+				draw_rect(full, Color(0.9, 0.75, 0.15,
+					0.2 if here else 0.09), true)
+			_hit.append({"rect": Rect2(full.position, Vector2(LABEL_W, ROW_H)),
+				"what": "row", "row": row, "player": p, "col": -1})
 
-	# The device row, first, because what a player is holding decides whether
-	# the pad column below it means anything at all.
-	var on_dev := sel == ROW_DEVICE
-	if on_dev:
-		draw_rect(Rect2(x - 8, y - 2, 416, 26), Color(0.9, 0.75, 0.15, 0.18),
-			true)
-	draw_string(font, Vector2(x, y + 17), "Device",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 14,
-		Color(1, 0.9, 0.4) if on_dev else Color(0.85, 0.85, 0.88))
-	var pick: String = input.choice_name(str(input.pref[cfg_player])) if input else "?"
-	if pick.length() > 26:
-		pick = pick.substr(0, 25) + "…"
-	# What he ASKED for, and then what he actually got -- they differ whenever
-	# the other player already has that pad, or it is not plugged in.
-	var got := "-- nothing"
-	if input:
-		var dev: int = input.device[cfg_player]
-		got = "-> %s" % kind.to_upper() if dev >= 0 else "-> keyboard"
-	draw_string(font, Vector2(x + 150, y + 17), "< %s >" % pick,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.6, 0.85, 1.0))
-	draw_string(font, Vector2(x + 340, y + 17), got,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.5, 0.75, 0.55))
-	y += 26.0
+			if row == ROW_DEVICE:
+				draw_string(font, Vector2(cx, y + 17.0), "Device",
+					HORIZONTAL_ALIGNMENT_LEFT, -1, 13,
+					Color(1, 0.9, 0.4) if here else Color(0.8, 0.8, 0.84))
+				_device_cell(font, Vector2(cx + LABEL_W, y), p, kind, mouse)
+				y += ROW_H
+				continue
 
-	for i in _Input.N:
-		var on := i + 1 == sel
-		if on:
-			draw_rect(Rect2(x - 8, y - 2, 416, 26),
-				Color(0.9, 0.75, 0.15, 0.18), true)
-		draw_string(font, Vector2(x, y + 17), _Input.LABEL[i],
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 14,
-			Color(1, 0.9, 0.4) if on else Color(0.85, 0.85, 0.88))
+			var i := row - BITS_FROM
+			draw_string(font, Vector2(cx, y + 17.0), _Input.LABEL[i],
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 13,
+				Color(1, 0.9, 0.4) if here else Color(0.85, 0.85, 0.88))
+			for col in 2:
+				var cell := Rect2(cx + LABEL_W + float(col) * CELL_W, y,
+					CELL_W - 6.0, ROW_H)
+				_hit.append({"rect": cell, "what": "row", "row": row,
+					"player": p, "col": col})
+				var on_col: bool = capture_pad == (col == 1)
+				var waiting: bool = here and capturing == i and on_col
+				var tex: Texture2D = null
+				var text := ""
+				if col == 0:
+					tex = glyphs.key(int(input.keys[p][i]))
+					text = _Glyphs.key_name(int(input.keys[p][i]))
+				else:
+					tex = glyphs.button(kind, int(input.pad[p][i]))
+					text = _Glyphs.button_name(int(input.pad[p][i]))
+				_slot(font, cell, tex, text, waiting,
+					(here and on_col) or cell.has_point(mouse))
+			y += ROW_H
 
-		var wait_key := capturing == i and not capture_pad
-		var wait_pad := capturing == i and capture_pad
-		_slot(font, Vector2(x + 150, y), glyphs.key(int(input.keys[cfg_player][i])),
-			_Glyphs.key_name(int(input.keys[cfg_player][i])), wait_key,
-			on and not capture_pad)
-		_slot(font, Vector2(x + 280, y),
-			glyphs.button(kind, int(input.pad[cfg_player][i])),
-			_Glyphs.button_name(int(input.pad[cfg_player][i])), wait_pad,
-			on and capture_pad)
-		y += 26.0
+	# The two actions, as things you can click, like the reference has them.
+	var by := py + h - 54.0
+	var dr := Rect2(px + 28.0, by, 150.0, 24.0)
+	var xr := Rect2(px + 28.0 + COL_W, by, 150.0, 24.0)
+	_hit.append({"rect": dr, "what": "defaults", "row": 0, "player": 0,
+		"col": -1})
+	_hit.append({"rect": xr, "what": "back", "row": 0, "player": 0, "col": -1})
+	for pair in [[dr, "Defaults   (R)"], [xr, "Exit   (ESC)"]]:
+		var r: Rect2 = pair[0]
+		var hot := r.has_point(mouse)
+		if hot:
+			draw_rect(r, Color(0.9, 0.75, 0.15, 0.12), true)
+		draw_string(font, Vector2(r.position.x, r.position.y + 17.0),
+			str(pair[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 13,
+			Color(1, 0.9, 0.4) if hot else Color(0.7, 0.7, 0.75))
+
+	draw_string(font, Vector2(px + 28.0, py + h - 16.0),
+		"click a cell to rebind it   TAB %s   arrows move   ESC back"
+		% ("pad column" if capture_pad else "key column"),
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.45, 0.45, 0.5))
+
+
+## The device cell: what he asked for, and what he actually got.
+func _device_cell(font: Font, at: Vector2, p: int, kind: String,
+		mouse: Vector2) -> void:
+	var cell := Rect2(at.x, at.y, CELL_W * 2.0 - 6.0, ROW_H)
+	_hit.append({"rect": cell, "what": "row", "row": ROW_DEVICE, "player": p,
+		"col": 0})
+	if cell.has_point(mouse):
+		draw_rect(cell, Color(1, 0.9, 0.4, 0.1), true)
+	var pick: String = input.choice_name(str(input.pref[p])) if input else "?"
+	if pick.length() > 18:
+		pick = pick.substr(0, 17) + "…"
+	var got := "keyboard"
+	if input and int(input.device[p]) >= 0:
+		got = kind.to_upper()
+	draw_string(font, Vector2(at.x, at.y + 17.0), "< %s >" % pick,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.6, 0.85, 1.0))
+	draw_string(font, Vector2(at.x + CELL_W + 40.0, at.y + 17.0), got,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.5, 0.75, 0.55))
 
 
 ## One binding cell: the picture when there is one, the name when there is not,
 ## and "press..." while it is waiting.
-func _slot(font: Font, at: Vector2, tex: Texture2D, text: String,
+func _slot(font: Font, cell: Rect2, tex: Texture2D, text: String,
 		waiting: bool, focus: bool) -> void:
 	if focus:
-		draw_rect(Rect2(at.x - 4, at.y - 1, 112, 24),
-			Color(1, 0.9, 0.4, 0.13), true)
-		draw_rect(Rect2(at.x - 4, at.y - 1, 112, 24),
-			Color(1, 0.9, 0.4, 0.5), false, 1.0)
+		draw_rect(cell, Color(1, 0.9, 0.4, 0.12), true)
+		draw_rect(cell, Color(1, 0.9, 0.4, 0.45), false, 1.0)
 	if waiting:
-		draw_string(font, Vector2(at.x, at.y + 17), "press...",
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.4, 1.0, 0.5))
+		draw_string(font, Vector2(cell.position.x + 6.0,
+			cell.position.y + 17.0), "press...", HORIZONTAL_ALIGNMENT_LEFT,
+			-1, 13, Color(0.4, 1.0, 0.5))
 		return
 	if tex:
-		draw_texture_rect(tex, Rect2(at.x, at.y, 22, 22), false)
+		draw_texture_rect(tex, Rect2(cell.position.x + 6.0,
+			cell.position.y + 2.0, 20.0, 20.0), false)
 		return
-	draw_string(font, Vector2(at.x, at.y + 17), text,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.9, 0.9, 0.95))
+	draw_string(font, Vector2(cell.position.x + 6.0, cell.position.y + 17.0),
+		text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.9, 0.9, 0.95))
 
 
 func _title(font: Font, centre: Vector2, text: String) -> void:

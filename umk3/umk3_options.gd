@@ -20,10 +20,14 @@ signal closed
 var video = null                         ## the UMK3Video everything shares
 var sel := 0
 
-enum Row { SIZE, MODE, AA, VSYNC, FPS, BACK }
-const ROW_NAME := ["Resolution", "Window", "Antialiasing", "Vertical sync",
-	"Frame limit", "Back"]
-const N := 6
+enum Row { MONITOR, SIZE, MODE, AA, VSYNC, FPS, BACK }
+const ROW_NAME := ["Monitor", "Resolution", "Window", "Antialiasing",
+	"Vertical sync", "Frame limit", "Back"]
+const N := 7
+
+## Where each row was painted, so a click can be tested against what is
+## actually on the screen rather than against a second copy of the layout.
+var _hit: Array = []
 
 
 func _ready() -> void:
@@ -49,6 +53,15 @@ func close() -> void:
 func _input(event: InputEvent) -> void:
 	if not visible or video == null:
 		return
+	if event is InputEventMouseMotion:
+		queue_redraw()
+		return
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_click(get_local_mouse_position())
+		get_viewport().set_input_as_handled()
+		queue_redraw()
+		return
+
 	var act := ""
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
@@ -83,8 +96,30 @@ func _input(event: InputEvent) -> void:
 	queue_redraw()
 
 
+## Left half of a row steps it back, right half steps it forward -- which is
+## what the `< value >` arrows on the row are promising.
+func _click(at: Vector2) -> void:
+	for h in _hit:
+		var r: Rect2 = h["rect"]
+		if not r.has_point(at):
+			continue
+		sel = int(h["row"])
+		if sel == Row.BACK:
+			close()
+			return
+		_cycle(-1 if at.x < r.position.x + r.size.x * 0.5 else 1)
+		return
+
+
 func _cycle(step: int) -> void:
 	match sel:
+		Row.MONITOR:
+			video.screen = posmod(video.screen + step, video.screens())
+			# The size list belongs to the display, so a size the new one
+			# cannot show has to be pulled back into range.
+			var list: Array = video.sizes()
+			if not list.has(video.size):
+				video.size = list[list.size() - 1]
 		Row.SIZE:
 			var list: Array = video.sizes()
 			var at: int = list.find(video.size)
@@ -109,6 +144,7 @@ func _cycle(step: int) -> void:
 
 func _value(row: int) -> String:
 	match row:
+		Row.MONITOR: return video.screen_name()
 		Row.SIZE:  return video.size_name()
 		Row.MODE:  return str(_Video.MODE_NAME[int(video.mode)])
 		Row.AA:    return str(_Video.AA_NAME[clampi(video.aa, 0,
@@ -134,7 +170,7 @@ func _draw() -> void:
 	var h := 30.0 * float(N) + 128.0
 	var x := maxf(12.0, vp.x * 0.5 - w * 0.5)
 	var y := maxf(20.0, (vp.y - h) * 0.4)
-	draw_rect(Rect2(x, y, w, h), Color(0.04, 0.04, 0.06, 0.96), true)
+	draw_rect(Rect2(x, y, w, h), Color(0.04, 0.04, 0.06, 1.0), true)
 	draw_rect(Rect2(x, y, w, h), Color(1, 0.85, 0.2, 0.35), false, 1.0)
 
 	var tx := x + 24.0
@@ -147,11 +183,16 @@ func _draw() -> void:
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 26, Color(1, 0.88, 0.3))
 	ty += 30.0
 
+	var mouse := get_local_mouse_position()
+	_hit.clear()
 	for i in N:
-		var on := i == sel
+		var r := Rect2(x + 12, ty - 2, w - 24, 26)
+		_hit.append({"rect": r, "row": i})
+		var hover := r.has_point(mouse)
+		var on: bool = i == sel or hover
 		if on:
-			draw_rect(Rect2(x + 12, ty - 2, w - 24, 26),
-				Color(0.9, 0.75, 0.15, 0.2), true)
+			draw_rect(r, Color(0.9, 0.75, 0.15, 0.2 if i == sel else 0.1),
+				true)
 		draw_string(font, Vector2(tx, ty + 17), ROW_NAME[i],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 15,
 			Color(1, 0.9, 0.4) if on else Color(0.85, 0.85, 0.88))
@@ -175,5 +216,5 @@ func _draw() -> void:
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.45, 0.45, 0.5))
 	ty += 16.0
 	draw_string(font, Vector2(tx, ty),
-		"W/S or d-pad move   A/D or left/right change   ESC back",
+		"click either half of a row, or W/S and A/D, or the d-pad   ESC back",
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.5, 0.5, 0.55))

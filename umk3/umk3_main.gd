@@ -21,7 +21,7 @@ const _Options := preload("res://umk3/umk3_options.gd")
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
 ## with every export.
-const BUILD := "2026-09-12 09:00  run, block, coin markers, video options"
+const BUILD := "2026-09-12 10:00  key config, monitors, real pause"
 const UMK3Paths := preload("res://umk3/umk3_paths.gd")
 ## preload, not class_name: a class_name is invisible until the editor has
 ## indexed the project, and that is exactly when a fresh checkout runs.
@@ -113,6 +113,13 @@ func _ready() -> void:
 	print("[umk3] data: " + res)
 
 	_world = Node3D.new()
+	# **PAUSABLE, explicitly, and this is the whole of why the fight kept
+	# moving behind the pause menu.** This node is set PROCESS_MODE_ALWAYS so
+	# that it can still poll the pad's Start button while the tree is paused --
+	# and ALWAYS propagates DOWN through every child left on INHERIT, which the
+	# world and the fight inside it were. Saying it here stops the inheritance
+	# at the one node that must not keep running.
+	_world.process_mode = Node.PROCESS_MODE_PAUSABLE
 	add_child(_world)
 
 	# The window is put where it was left BEFORE anything is drawn into it.
