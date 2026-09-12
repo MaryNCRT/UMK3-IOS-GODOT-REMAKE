@@ -647,6 +647,8 @@ class Fight extends RefCounted:
 	var tele_air := false
 	## And it keeps the landing frame, so the punch gets one.
 	var tele_landed := false
+	## Has he come back on the other side yet? The punch belongs after that.
+	var tele_wrapped := false
 	## Whoever's spear is dragging him, while St.SPEARED.
 	var pulled_by = null
 	## Which reaction is playing, so the knockdown knows what it came from.
@@ -734,6 +736,10 @@ var last_special := ""
 
 ## Frames since somebody hit the floor.
 var round_over := 0
+## The screen shake, from `shake_a11`. Counted down in ticks.
+var shake := 0
+var shake_amp := 0.0
+const SHAKE_FRAMES := 8
 ## The camera window, in engine units, so the teleport can wrap him across it.
 var cam_mid := 0
 var cam_span := float(CAM_WIDTH)
@@ -1227,6 +1233,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		f.sp_thrown = false
 		f.tele_air = false
 		f.tele_landed = false
+		f.tele_wrapped = false
 		f.noedge = false
 		if audio:
 			audio.special(f.special)
@@ -1334,7 +1341,12 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	# not when he arrived. `vy > 0` is the descent, which is the half of the
 	# arc the punch belongs to.
 	if a.st == St.SPECIAL and a.special == _Moves.SP_TELEPUNCH:
-		if a.vy <= 0 and not a.tele_landed:
+		# **`t_sctele_calla_2` (0x0003ee5c) is the only thing in the whole
+		# teleport that calls `strike_check_a0`**, and `t_sctele_calla_1`
+		# installs it at `obj->0x34` on the same frame it does the wrap. So the
+		# punch exists only AFTER he has come back on the other side -- not on
+		# the way out, which is where this port was checking it.
+		if not a.tele_wrapped:
 			return
 	else:
 		# The active window: from a quarter of the way in to three quarters. A
@@ -1380,6 +1392,14 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		# **The round-ending hit always puts him on the floor.** Whatever the
 		# reaction was, the loser collapses.
 		_collapse(b)
+	# **`t_r_uppercut` shakes the floor.** It calls `shake_a11` (0x000581e0)
+	# with `obj->0x48 = 0x60006`, and `shake_a11` is one line:
+	# `MKEvent_Add(1, 0, obj->0x48, 0)` -- event type 1, the screen shake, with
+	# the two halves {6, 6} as its amplitude. It is the only reaction that does
+	# it, and it is what makes an uppercut land like an uppercut.
+	if int(stk[_Stk.REACT]) == _Stk.UPPERCUT:
+		shake = SHAKE_FRAMES
+		shake_amp = 6.0
 	if audio:
 		# **The reaction picks the sound.** `t_r_hi_punch` plays `smack`,
 		# `t_r_lo_kick` plays `body_hit`, `t_r_uppercut` plays `big_smack`,
@@ -1508,8 +1528,10 @@ func _tele_wrap(f: Fight) -> void:
 	var right := cam_mid + half
 	if f.vx < 0 and f.xi() < left:
 		f.x = right * ONE
+		f.tele_wrapped = true
 	elif f.vx > 0 and f.xi() > right:
 		f.x = left * ONE
+		f.tele_wrapped = true
 
 
 ## Let go of the spear. `t_new_spear_proc`, transcribed.
@@ -1732,6 +1754,8 @@ func tick() -> void:
 			var half := n / 2
 			if f.ani_index == 0 or f.ani_index == half:
 				audio.step()
+	if shake > 0:
+		shake -= 1
 	if hud:
 		hud.health = [fighters[0].health, fighters[1].health]
 		hud.wins = [fighters[0].wins, fighters[1].wins]
@@ -1861,6 +1885,19 @@ func _pose(f: Fight) -> void:
 	var frames: Array = s[2]
 	var n := frames.size()
 	var idx: int = clampi(f.ani_index, 0, n - 1)
+	# **The teleport's clip is a leap and then a punch, and they are two
+	# different halves of the move.** `tl_do_scorp_tele` flies him backwards
+	# and `t_sctele_calla_2` -- installed at the wrap -- is what throws the
+	# punch. Letting the three frames run on the flight's own clock left him
+	# holding SCTELEPUNCH1, face down, for ten frames of travelling the other
+	# way, which is the pose that looked wrong.
+	#
+	# So: the leap frames while he flies, the punch frame once he is back.
+	if f.st == St.SPECIAL and f.special == _Moves.SP_TELEPUNCH and n >= 3:
+		idx = 2 if f.tele_wrapped else mini(f.ani_index, 1)
+		f.node.set_pose(frames[idx], frames[idx], 0.0)
+		return
+
 	# **`find_last_frame`**, and only for the DEAD: the round-ending collapse
 	# jumps to the end of the clip rather than playing it, which is what that
 	# call in `t_collapse_on_ground` is for. A fighter who is merely knocked
@@ -1980,7 +2017,17 @@ func _frame_camera() -> void:
 
 	cam_mid = int(mid)
 	cam_span = span_h
-	_cam.position = Vector3(mid * scale_units, height * 0.66, dist)
+	# The shake, while one is running: it decays over its eight frames and
+	# alternates side to side, which is what a two-halfword amplitude of {6, 6}
+	# reads as on a camera that has no shake parameter of its own.
+	var jx := 0.0
+	var jy := 0.0
+	if shake > 0:
+		var k := shake_amp * float(shake) / float(SHAKE_FRAMES) * scale_units
+		jx = k if (shake & 1) == 0 else -k
+		jy = k * 0.5 if (shake & 2) == 0 else -k * 0.5
+	_cam.position = Vector3(mid * scale_units + jx,
+		height * 0.66 + jy, dist)
 	_cam.rotation = Vector3.ZERO
 	_cam.near = height * 0.15
 	_cam.far = maxf(_cam.far, dist * 4.0)
