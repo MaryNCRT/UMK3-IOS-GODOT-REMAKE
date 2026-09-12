@@ -74,10 +74,14 @@ var suspended := false
 const ROOT_ITEMS := ["RESUME", "CONTROLS", "VIDEO OPTIONS", "RESTART ROUND",
 	"QUIT TO MENU"]
 
-## Row 0 of a column is the device; the ten bits follow it.
+## Row 0 of a column is the device and row 1 the glyph style; the ten bits
+## follow. The style row is drawn for both players whether or not they have a
+## pad -- a row that appears and disappears makes the two columns different
+## heights and the cursor jump -- but it only ANSWERS to a player who has one.
 const ROW_DEVICE := 0
-const BITS_FROM := 1
-const ROWS := _Input.N + 1
+const ROW_STYLE := 1
+const BITS_FROM := 2
+const ROWS := _Input.N + 2
 
 ## What the mouse can land on, rebuilt every time the page is drawn. Immediate
 ## mode: the rectangles a click is tested against are the ones just painted, so
@@ -189,6 +193,8 @@ func _input(event: InputEvent) -> void:
 			"ok":
 				if sel == ROW_DEVICE:
 					_cycle_device(1)
+				elif sel == ROW_STYLE:
+					input.cycle_style(cfg_player, 1)
 				else:
 					capturing = sel - BITS_FROM
 			"reset":
@@ -220,11 +226,24 @@ func _click(at: Vector2) -> void:
 				sel = int(h["row"])
 				if int(h["col"]) < 0:
 					return
-				if sel == ROW_DEVICE:
-					_cycle_device(1)
-				else:
-					capture_pad = int(h["col"]) == 1
-					capturing = sel - BITS_FROM
+				capture_pad = int(h["col"]) == 1
+				capturing = sel - BITS_FROM
+			"device-":
+				cfg_player = int(h["player"])
+				sel = ROW_DEVICE
+				_cycle_device(-1)
+			"device+":
+				cfg_player = int(h["player"])
+				sel = ROW_DEVICE
+				_cycle_device(1)
+			"style-":
+				cfg_player = int(h["player"])
+				sel = ROW_STYLE
+				input.cycle_style(cfg_player, -1)
+			"style+":
+				cfg_player = int(h["player"])
+				sel = ROW_STYLE
+				input.cycle_style(cfg_player, 1)
 			"defaults":
 				input.reset()
 				input.save_cfg()
@@ -377,6 +396,19 @@ func _draw_controls(vp: Vector2, font: Font) -> void:
 				y += ROW_H
 				continue
 
+			if row == ROW_STYLE:
+				var got_pad: bool = input and input.has_pad(p)
+				var lab := Color(0.8, 0.8, 0.84)
+				if not got_pad:
+					lab = Color(0.4, 0.4, 0.44)
+				elif here:
+					lab = Color(1, 0.9, 0.4)
+				draw_string(font, Vector2(cx, y + 17.0), "Buttons",
+					HORIZONTAL_ALIGNMENT_LEFT, -1, 13, lab)
+				_style_cell(font, Vector2(cx + LABEL_W, y), p, got_pad, mouse)
+				y += ROW_H
+				continue
+
 			var i := row - BITS_FROM
 			draw_string(font, Vector2(cx, y + 17.0), _Input.LABEL[i],
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13,
@@ -417,29 +449,83 @@ func _draw_controls(vp: Vector2, font: Font) -> void:
 			Color(1, 0.9, 0.4) if hot else Color(0.7, 0.7, 0.75))
 
 	draw_string(font, Vector2(px + 28.0, py + h - 16.0),
-		"click a cell to rebind it   TAB %s   arrows move   ESC back"
+		"click a cell to rebind it   TAB %s   left/right swaps player   ESC back"
 		% ("pad column" if capture_pad else "key column"),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.45, 0.45, 0.5))
 
 
-## The device cell: what he asked for, and what he actually got.
+## The device cell: **two arrows you can click and the name between them**,
+## then what he is actually holding.
+##
+## The arrows are there because left and right on this page mean the other
+## PLAYER -- with both columns on screen they cannot mean anything else -- so
+## the one row that has a value to step needs somewhere to click. Enter and the
+## pad's bottom face button step it forward too.
 func _device_cell(font: Font, at: Vector2, p: int, kind: String,
 		mouse: Vector2) -> void:
-	var cell := Rect2(at.x, at.y, CELL_W * 2.0 - 6.0, ROW_H)
-	_hit.append({"rect": cell, "what": "row", "row": ROW_DEVICE, "player": p,
-		"col": 0})
-	if cell.has_point(mouse):
-		draw_rect(cell, Color(1, 0.9, 0.4, 0.1), true)
+	var lw := 16.0
+	var w := CELL_W * 2.0 - 6.0
+	var left := Rect2(at.x, at.y, lw, ROW_H)
+	var right := Rect2(at.x + w - lw, at.y, lw, ROW_H)
+	var mid := Rect2(at.x + lw, at.y, w - lw * 2.0, ROW_H)
+	_hit.append({"rect": left, "what": "device-", "row": ROW_DEVICE,
+		"player": p, "col": 0})
+	_hit.append({"rect": right, "what": "device+", "row": ROW_DEVICE,
+		"player": p, "col": 0})
+	_hit.append({"rect": mid, "what": "device+", "row": ROW_DEVICE,
+		"player": p, "col": 0})
+
+	for pair in [[left, "<"], [right, ">"]]:
+		var r: Rect2 = pair[0]
+		var hot := r.has_point(mouse)
+		if hot:
+			draw_rect(r, Color(1, 0.9, 0.4, 0.18), true)
+		draw_string(font, Vector2(r.position.x + 5.0, r.position.y + 17.0),
+			str(pair[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14,
+			Color(1, 0.95, 0.6) if hot else Color(0.8, 0.8, 0.5))
+
 	var pick: String = input.choice_name(str(input.pref[p])) if input else "?"
-	if pick.length() > 18:
-		pick = pick.substr(0, 17) + "…"
-	var got := "keyboard"
-	if input and int(input.device[p]) >= 0:
-		got = kind.to_upper()
-	draw_string(font, Vector2(at.x, at.y + 17.0), "< %s >" % pick,
+	if pick.length() > 20:
+		pick = pick.substr(0, 19) + "…"
+	draw_string(font, Vector2(mid.position.x + 4.0, at.y + 17.0), pick,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.6, 0.85, 1.0))
-	draw_string(font, Vector2(at.x + CELL_W + 40.0, at.y + 17.0), got,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.5, 0.75, 0.55))
+
+	# No second column saying what he GOT. Without an automatic option the
+	# choice IS what he gets, and the one case where it is not -- a named pad
+	# that is unplugged -- the value itself says so. The old extra column ran
+	# into player two's labels.
+
+
+## The glyph-style cell. Two arrows and the name between them, greyed out for
+## a player with no pad -- there is nothing to override on a keyboard.
+func _style_cell(font: Font, at: Vector2, p: int, got_pad: bool,
+		mouse: Vector2) -> void:
+	var lw := 16.0
+	var w := CELL_W * 2.0 - 6.0
+	if got_pad:
+		var left := Rect2(at.x, at.y, lw, ROW_H)
+		var right := Rect2(at.x + w - lw, at.y, lw, ROW_H)
+		var mid := Rect2(at.x + lw, at.y, w - lw * 2.0, ROW_H)
+		_hit.append({"rect": left, "what": "style-", "row": ROW_STYLE,
+			"player": p, "col": 0})
+		_hit.append({"rect": right, "what": "style+", "row": ROW_STYLE,
+			"player": p, "col": 0})
+		_hit.append({"rect": mid, "what": "style+", "row": ROW_STYLE,
+			"player": p, "col": 0})
+		for pair in [[left, "<"], [right, ">"]]:
+			var r: Rect2 = pair[0]
+			var hot := r.has_point(mouse)
+			if hot:
+				draw_rect(r, Color(1, 0.9, 0.4, 0.18), true)
+			draw_string(font, Vector2(r.position.x + 5.0, r.position.y + 17.0),
+				str(pair[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14,
+				Color(1, 0.95, 0.6) if hot else Color(0.8, 0.8, 0.5))
+		draw_string(font, Vector2(at.x + lw + 4.0, at.y + 17.0),
+			input.style_name(p), HORIZONTAL_ALIGNMENT_LEFT, -1, 12,
+			Color(0.6, 0.85, 1.0))
+		return
+	draw_string(font, Vector2(at.x + lw + 4.0, at.y + 17.0), "needs a pad",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.4, 0.4, 0.44))
 
 
 ## One binding cell: the picture when there is one, the name when there is not,

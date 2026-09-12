@@ -185,6 +185,10 @@ func _button(text: String, cb: Callable) -> Button:
 	# texels; the text must not depend on that.
 	b.add_theme_color_override("font_color", Color(0.93, 0.90, 0.84))
 	b.add_theme_color_override("font_hover_color", Color(1.0, 0.85, 0.25))
+	# **A focused button has to LOOK focused.** Without this the pad could move
+	# the focus around perfectly well and nothing on the screen would say where
+	# it was, which is the same as the pad not working.
+	b.add_theme_color_override("font_focus_color", Color(1.0, 0.85, 0.25))
 	b.add_theme_color_override("font_pressed_color", Color(1.0, 0.55, 0.1))
 	b.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.95))
 	b.add_theme_constant_override("outline_size", 5)
@@ -204,12 +208,32 @@ func _button(text: String, cb: Callable) -> Button:
 		# theme last set and come out muddy.
 		sb.modulate_color = Color(0.72, 0.70, 0.66)
 		b.add_theme_stylebox_override("normal", sb)
-		b.add_theme_stylebox_override("hover", sb)
 		b.add_theme_stylebox_override("pressed", sb)
-		b.add_theme_stylebox_override("focus", sb)
+		var lit := StyleBoxTexture.new()
+		lit.texture = at
+		lit.set_texture_margin_all(12)
+		lit.modulate_color = Color(1.0, 0.93, 0.72)
+		b.add_theme_stylebox_override("hover", lit)
+		b.add_theme_stylebox_override("focus", lit)
 	b.pressed.connect(cb)
+	b.focus_mode = Control.FOCUS_ALL
 	_rows.add_child(b)
 	return b
+
+
+## Put the focus on the first row, so a pad has somewhere to start.
+##
+## Godot's own `ui_up` / `ui_down` / `ui_accept` already carry the d-pad, the
+## left stick and the bottom face button, and a focused Button answers all
+## three -- so the whole of "the pad works in the menus" is making sure
+## something HAS the focus. Deferred a frame because the rows are added in this
+## one and a node cannot take focus before it is in the tree.
+func _focus_first() -> void:
+	await get_tree().process_frame
+	for c in _rows.get_children():
+		if c is Button:
+			(c as Button).grab_focus()
+			return
 
 
 func _show_title() -> void:
@@ -238,6 +262,7 @@ func _show_main() -> void:
 	_button("BACK", _show_title)
 	_button("QUIT", func(): get_tree().quit())
 	_layout()
+	_focus_first()
 
 
 func _show_stages(viewer := false) -> void:
@@ -259,20 +284,39 @@ func _show_stages(viewer := false) -> void:
 		var stem: String = UMK3StageList.STAGES[i]
 		_button(UMK3StageList.pretty(stem), func(): play_stage.emit(stem))
 	_layout()
+	_focus_first()
 
 
 func _unhandled_input(e: InputEvent) -> void:
-	if not (e is InputEventKey and e.pressed and not e.echo) \
-			and not (e is InputEventMouseButton and e.pressed):
+	# **A pad button counts as a key here.** "PRESS ANY KEY" that only listens
+	# for a keyboard is a door a pad cannot open, and everything past it is
+	# reachable with the pad already.
+	var pad_btn: bool = e is InputEventJoypadButton and e.pressed
+	var keyed: bool = e is InputEventKey and e.pressed and not e.echo
+	var clicked: bool = e is InputEventMouseButton and e.pressed
+	if not keyed and not clicked and not pad_btn:
 		return
+	# Back: Escape, or the pad's right face button, which is what B means
+	# everywhere else in this build.
+	var back := false
+	if keyed and e.keycode == KEY_ESCAPE:
+		back = true
+	if pad_btn and e.button_index == JOY_BUTTON_B:
+		back = true
 	match _screen:
 		Screen.TITLE:
+			# B and Start are how a pad gets OUT of things; they should not be
+			# what gets it in, or a press meant for somewhere else walks
+			# straight through the title.
+			if pad_btn and (e.button_index == JOY_BUTTON_B
+				or e.button_index == JOY_BUTTON_START):
+				return
 			_show_main()
 		Screen.MAIN:
-			if e is InputEventKey and e.keycode == KEY_ESCAPE:
+			if back:
 				_show_title()
 		Screen.STAGES:
-			if e is InputEventKey and e.keycode == KEY_ESCAPE:
+			if back:
 				_show_main()
 
 
