@@ -580,10 +580,36 @@ const BLOOD := {
 	8: 1,        # t_r_uppercut
 }
 
+## **The end of the fall, and it is PART TWO of the same stream.**
+##
+## `find_part2` (0x00055450) is four instructions: walk the animation stream
+## forward until a word reads ZERO and leave the pointer just past it. So a
+## stream is not one list -- it is parts separated by a 0, and the knockdown
+## has two of them. Raw, out of `_nj_ani_data` entry 30:
+##
+##     253 255 257 258 259 261   0   263 265   0
+##     \_________ the tumble ________/    \_ flat _/
+##
+## which through `SCORPIONFRAMES.bin` is 119..124, then 125 and 126. The sweep
+## fall (31) is the same shape: 246..249, then 250 and 251. The getup (33)
+## even carries the sweep's frames as ITS part two.
+##
+## This is why the fall looked unfinished. The generator that built the table
+## stopped at the first 0 -- the very marker `find_part2` looks for -- so the
+## two frames that put him on the ground were never in it, and the earlier
+## note in this file that "neither 126 nor 251 appears in any of the 92
+## streams" was an artefact of that and is wrong.
+##
+## `t_reaction_land` (0x000425b8) is what plays them: `pl->0x40 = 30`,
+## `find_ani_part2`, `pl->0x1c = 4`, `t_mframew`, then a three-frame wait and
+## the getup. Rate 4, forward, and it holds the last one.
 const FALL_TAIL := {
 	30: [125, 126],                      # SCKNOCKDOWN7, SCKNOCKDOWN8
 	31: [250, 251],                      # SCSWEEPFALL5, SCSWEEPFALL6
 }
+## `t_reaction_land`: `pl->0x1c = 4`, then `task->0xfc = 3`.
+const RATE_LAND := 4
+const LAND_WAIT := 3
 
 
 ## How long a knocked-down fighter lies there before getting up. **Chosen** --
@@ -1451,7 +1477,14 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 					_hit_the_floor(f)
 					return
 				f.st = St.DOWN
-				f.timer = RATE_FALL + DOWN_HOLD
+				# **Part two, at its own rate, and then the wait.** Long
+				# enough for both frames to be seen: two at rate 4 plus the
+				# three `t_reaction_land` sits on before the getup.
+				var tail: Array = FALL_TAIL.get(f.ani, [])
+				if tail.is_empty():
+					f.timer = RATE_FALL + DOWN_HOLD
+				else:
+					f.timer = tail.size() * RATE_LAND + LAND_WAIT
 				f.timer_total = f.timer
 				if audio:
 					audio.fall()
@@ -2435,9 +2468,13 @@ func _pose(f: Fight) -> void:
 	if f.st == St.DOWN or f.st == St.DEAD:
 		var tail: Array = FALL_TAIL.get(f.ani, [])
 		if not tail.is_empty():
-			var last: int = tail.size() - 1 if f.st == St.DEAD else 0
+			# Part two plays FORWARD at rate 4 and holds its last frame --
+			# and it is the same two frames whether the round is over or
+			# not. The earlier version showed only the first of them unless
+			# the fighter was dead, which is the missing end of the fall.
 			var gone := f.timer_total - f.timer
-			var at: int = 0 if gone < RATE_FALL else last
+			@warning_ignore("integer_division")
+			var at: int = clampi(gone / RATE_LAND, 0, tail.size() - 1)
 			f.node.set_pose(int(tail[at]), int(tail[at]), 0.0)
 			return
 
