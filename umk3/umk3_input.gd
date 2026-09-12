@@ -265,16 +265,23 @@ func style_name(player: int) -> String:
 
 ## The ten-bit word for one player. **This is the only place a key or a button
 ## turns into an engine bit.**
+##
+## **One device at a time.** A player who has chosen a pad is not also moved by
+## the keyboard: two hands on one fighter is how somebody else's WASD walks
+## your man into a sweep. The keyboard answers when it is what he CHOSE, and
+## when the pad he chose is not plugged in -- having nothing at all is not a
+## useful way to be right.
 func read(player: int) -> int:
 	var w := 0
-	var k: Array = keys[player]
-	var b: Array = pad[player]
 	var dev: int = device[player]
-	for i in N:
-		if int(k[i]) != KEY_NONE and Input.is_key_pressed(int(k[i])):
-			w |= 1 << i
 	if dev < 0:
+		var k: Array = keys[player]
+		for i in N:
+			if int(k[i]) != KEY_NONE and Input.is_key_pressed(int(k[i])):
+				w |= 1 << i
 		return w
+
+	var b: Array = pad[player]
 	for i in N:
 		if pad_down(dev, int(b[i])):
 			w |= 1 << i

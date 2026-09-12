@@ -151,24 +151,26 @@ func _draw() -> void:
 					Color(0.55, 0.55, 0.6))
 
 
-## The key, and the pad button beside it when a pad is connected.
+## **What this player actually plays with, and only that.**
+##
+## Both columns at once was a leftover from when the keyboard stayed live
+## behind a pad. It does not any more -- see umk3_input.gd's `read` -- so
+## showing a W beside a d-pad would be showing a key that does nothing.
 func _binding(font: Font, at: Vector2, bit: int, kind: String, on_pad: bool,
 		lit: bool, fs: int) -> void:
-	var key: int = int(input.keys[player][bit])
-	var tex: Texture2D = glyphs.key(key)
+	var tex: Texture2D = null
+	var text := ""
+	if on_pad:
+		var btn: int = int(input.pad[player][bit])
+		tex = glyphs.button(kind, btn)
+		text = _Glyphs.button_name(btn)
+	else:
+		var key: int = int(input.keys[player][bit])
+		tex = glyphs.key(key)
+		text = _Glyphs.key_name(key)
 	if tex:
-		draw_texture_rect(tex, Rect2(at.x, at.y + 1, 18, 18), false)
-	else:
-		draw_string(font, Vector2(at.x, at.y + 14), _Glyphs.key_name(key),
-			HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 2,
-			Color(1, 0.9, 0.4) if lit else Color(0.45, 0.45, 0.45))
-	if not on_pad:
+		draw_texture_rect(tex, Rect2(at.x + 26, at.y + 1, 18, 18), false)
 		return
-	var btn: int = int(input.pad[player][bit])
-	var bt: Texture2D = glyphs.button(kind, btn)
-	if bt:
-		draw_texture_rect(bt, Rect2(at.x + 26, at.y + 1, 18, 18), false)
-	else:
-		draw_string(font, Vector2(at.x + 26, at.y + 14),
-			_Glyphs.button_name(btn), HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 3,
-			Color(1, 0.9, 0.4) if lit else Color(0.45, 0.45, 0.45))
+	draw_string(font, Vector2(at.x + 16, at.y + 14), text,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 2,
+		Color(1, 0.9, 0.4) if lit else Color(0.45, 0.45, 0.45))

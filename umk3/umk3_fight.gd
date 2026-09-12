@@ -611,6 +611,45 @@ const FALL_TAIL := {
 const RATE_LAND := 4
 const LAND_WAIT := 3
 
+## **Every attack has a RETRACTION, and this port was cutting it off.**
+##
+## The same 0 that splits the knockdown splits the attacks, and part two is the
+## arm or the leg coming back. `t_retract_strike` (0x0004cb48) is what plays
+## it: it clears the tag with `pl->0x20 = 0` and hands to
+## `t_retract_strike_act`, which pushes `t_act_mframew` -- and neither touches
+## `pl->0x40` or the rate. So the stream simply carries on from where the swing
+## left it, at the same speed.
+##
+## Straight out of `_nj_ani_data` through SCORPIONFRAMES.bin:
+##
+##     SCHIPUNCH     80  81  82  |  83  84  85     a separate return
+##     SCLOPUNCH    136 137 138  | 139 140 141     "
+##     SCHIKICK      74 .. 79    |  78 77 76 75 74 the same frames, backwards
+##     SCLOKICK     130 ..135    | 134 133 ..130   "
+##     SCSPINHOOK   208 ..212    | 213 214 215
+##     SCSWEEPKICK  252 ..256    | 257 258 259
+##     SCUPPERCUT   271 ..275    | 274             one frame, a settle
+##     SCCOMBO        8 ..11     |   9   8
+##     SCKNEECOMBO  108 109 110  | 109 108
+##     SCDUCKPUNCH   36  37  38  |  37  36  22
+##     SCDUCKHIKICK  26 .. 29    |  28  27  26 22
+##     SCDUCKLOKICK  33  34  35  |  34  34  22
+##     SCJUMPKICK   105 106 107  | 106 105
+##     SCFLIPUNCH    62  63  64  |  63  62
+##     SCFLIPKICK    54  55  56  |  55  54
+##
+## The low punch is the one that looked broken: it stopped on 138, arm fully
+## out, and snapped to the stance. The three ducking ones end on 22, which is
+## the ducking pose -- they return to a crouch rather than to standing, which
+## is exactly right and is not something anybody would have guessed.
+const ANI_TAIL := {
+	8: [37, 36, 22], 9: [28, 27, 26, 22], 10: [34, 34, 22],
+	11: [274], 14: [83, 84, 85], 15: [139, 140, 141], 16: [9, 8],
+	17: [78, 77, 76, 75, 74], 18: [134, 133, 132, 131, 130],
+	19: [109, 108], 20: [257, 258, 259], 21: [213, 214, 215],
+	23: [106, 105], 24: [63, 62], 25: [55, 54],
+}
+
 
 ## How long a knocked-down fighter lies there before getting up. **Chosen** --
 ## the engine counts it in a state that is not decompiled.
@@ -1237,7 +1276,12 @@ func _pressed_button(f: Fight, _raw: int) -> int:
 func _move_frames(sid: int) -> int:
 	if sid < 0:
 		return RATE_STANCE
-	return _ani_length(int(STRIKE_ANI.get(sid, 0)), _strike_rate(sid))
+	var ani: int = int(STRIKE_ANI.get(sid, 0))
+	var st := _stream(ani)
+	if st.is_empty():
+		return RATE_STANCE
+	var n: int = (st[2] as Array).size() + (ANI_TAIL.get(ani, []) as Array).size()
+	return n * _strike_rate(sid)
 
 
 ## The rate an attack plays at. -1 in the table means the engine never set one
@@ -2294,7 +2338,7 @@ func tick() -> void:
 		var s := _stream(f.ani)
 		if s.is_empty():
 			continue
-		var n: int = (s[2] as Array).size()
+		var n: int = _frames_of(f).size()
 		if not f.tick_ani(n, s[1]):
 			continue
 		if audio and (f.st == St.WALK_F or f.st == St.WALK_B):
@@ -2427,6 +2471,20 @@ func _ani_for(f: Fight) -> Array:
 	return [ANI_STANCE, RATE_STANCE]
 
 
+## The frames a fighter is actually playing: the clip, plus its retraction
+## when he is swinging. Only an ATTACK gets the tail -- the knockdown's part
+## two is the landing and `t_reaction_land` places it itself, and the getup's
+## is another clip's frames entirely.
+func _frames_of(f: Fight) -> Array:
+	var st := _stream(f.ani)
+	if st.is_empty():
+		return []
+	var frames: Array = st[2]
+	if f.st == St.ATTACK and ANI_TAIL.has(f.ani):
+		return frames + (ANI_TAIL[f.ani] as Array)
+	return frames
+
+
 ## One animation's [name, loops, frames], or an empty one.
 static func _stream(id: int) -> Array:
 	if id < 0 or id >= _Ani.ANI.size():
@@ -2447,7 +2505,7 @@ func _pose(f: Fight) -> void:
 	var s := _stream(f.ani)
 	if s.is_empty():
 		return
-	var frames: Array = s[2]
+	var frames: Array = _frames_of(f)
 	var n := frames.size()
 	var idx: int = clampi(f.ani_index, 0, n - 1)
 	# **The teleport's clip is a leap and then a punch, and they are two
