@@ -1486,6 +1486,13 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				else:
 					f.timer = tail.size() * RATE_LAND + LAND_WAIT
 				f.timer_total = f.timer
+				# `shake_n_sound` (0x000424fc) is two lines and this had only
+				# one of them: `pl->0x48 = 0x60006` into `shake_a11` -- the
+				# same {6, 6} the uppercut itself shakes with -- and then
+				# `rsnd_func(pl, 13)`, the ground thud, which was already
+				# right.
+				shake = SHAKE_FRAMES
+				shake_amp = 6.0
 				if audio:
 					audio.fall()
 			return
