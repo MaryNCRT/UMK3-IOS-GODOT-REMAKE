@@ -85,6 +85,8 @@ var _stage_light := true
 var _hitbox := false
 ## `--gap N` sets the half-gap a round opens with, for testing reach and hits.
 var _gap := -1
+## `--wins N` puts N rounds on both players' counters, for looking at the HUD.
+var _wins := -1
 
 
 func _ready() -> void:
@@ -116,6 +118,9 @@ func _ready() -> void:
 	# The window is put where it was left BEFORE anything is drawn into it.
 	_video = _Video.new()
 	_video.apply()
+	# Written on the first run too, so the file exists before anything is
+	# changed and a player can see where the settings live.
+	_video.save_cfg()
 
 	_menu = _Menu.new()
 	_menu.play_stage.connect(_enter_stage)
@@ -156,6 +161,7 @@ func _ready() -> void:
 			"--fog":    _Effects.opacity = float(args[i + 1])
 			"--hitbox": _hitbox = int(args[i + 1]) != 0
 			"--gap":    _gap = int(args[i + 1])
+			"--wins":   _wins = int(args[i + 1])
 			"--menu":   _open_menu = int(args[i + 1])
 			"--shot":
 				_shot = args[i + 1]
@@ -365,6 +371,9 @@ func _ensure_fight() -> void:
 		for s in _seq.split(","):
 			_fight.forced_seq.append(int(s))
 	_fight.show_hitbox = _hitbox
+	if _wins >= 0:
+		for f in _fight.fighters:
+			f.wins = _wins
 	if _gap >= 0:
 		_fight.start_gap = _gap
 		_fight.reset()

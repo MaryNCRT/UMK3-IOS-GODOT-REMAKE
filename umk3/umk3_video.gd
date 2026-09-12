@@ -74,9 +74,12 @@ func sizes() -> Array:
 
 ## Put every setting into effect. Safe to call as often as you like.
 func apply() -> void:
+	# **The buffer settings need a root Window and the rest does not**, and
+	# they are applied separately for exactly that reason: an early return on
+	# a missing root used to drop the vertical sync and the frame limit with
+	# it, silently, which is the kind of bug that reads as "the setting does
+	# nothing".
 	var root := Engine.get_main_loop().root as Window
-	if root == null:
-		return
 
 	# The window first: an exclusive fullscreen swap resizes the viewport, and
 	# the buffer settings should land on the size that survives it.
@@ -97,8 +100,9 @@ func apply() -> void:
 			_resize()
 
 	var at: int = clampi(aa, 0, AA_NAME.size() - 1)
-	root.msaa_3d = AA_MSAA[at]
-	root.scaling_3d_scale = float(AA_SCALE[at])
+	if root != null:
+		root.msaa_3d = AA_MSAA[at]
+		root.scaling_3d_scale = float(AA_SCALE[at])
 
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if vsync
 		else DisplayServer.VSYNC_DISABLED)
