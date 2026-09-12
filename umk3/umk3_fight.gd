@@ -31,16 +31,36 @@ const _Stk := preload("res://umk3/umk3_strikes.gd")
 # Everything in this section came out of the binary. Nothing here is a choice.
 
 ## mk3_init_game's defaults, before a level overrides them.
+## `mk3_init_game` (0x00031f30) writes RoundParam through the pointer at
+## 0x00165670, four words in: **-550, 950, 0, 5.** The ground was 0x12c here
+## and it is not in that function -- it is only an origin, so nothing on screen
+## moved, but a number that is not the binary's should not sit in this block.
 const ROUNDPARAM_LEFT := -550
 const ROUNDPARAM_RIGHT := 950
-const ROUNDPARAM_GROUND := 0x12c
+const ROUNDPARAM_GROUND := 0
 
-## gravity_n_bounds: left = G[0xb0] + 0x3a, right = G[0xb4] + 0x15c + 3.
+## `init_players` (0x0005a418), which is where these actually get computed:
+##
+##     G[0xac] = RoundParam[2] + 0xf7          the floor
+##     G[0xb0] = RoundParam[0]                 the camera's leftmost x
+##     G[0xb4] = RoundParam[1] - 0x18c - 3     the camera's rightmost x
+##
+## **0x18c + 3 is 399, and that is the width of the view.** The same 399 turns
+## up again in `t_sctele_calla_1` (0x00040aa0), which keeps a teleporting
+## fighter inside `G[0x468] .. G[0x468] + 0x18c + 3`. So the camera is a
+## 399-unit window that slides between -550 and 950.
+const CAM_WIDTH := 0x18c + 3                           #  399
+
+## `gravity_n_bounds`: left = G[0xb0] + 0x3a, right = G[0xb4] + 0x15c + 3.
+##
+## Which puts the walls **58 units inside the camera's left edge and 48 inside
+## its right** -- the arena is smaller than the view, on purpose, so a fighter
+## can never reach a screen edge.
 const WALL_L := ROUNDPARAM_LEFT + 0x3a                 # -492
-const WALL_R := ROUNDPARAM_RIGHT - 399 + 0x15f         #  902
+const WALL_R := ROUNDPARAM_RIGHT - CAM_WIDTH + 0x15f   #  902
 
 ## mk3_update: G[0xac] = RoundParam[2] + 0xf7, every frame.
-const FLOOR_Y := ROUNDPARAM_GROUND + 0xf7              #  547
+const FLOOR_Y := ROUNDPARAM_GROUND + 0xf7              #  247
 
 ## The hitbox.
 ##
@@ -500,6 +520,11 @@ class Fight extends RefCounted:
 	var sp_y := 0
 	var sp_vx := 0
 	var sp_thrown := false       ## has this throw let go of it yet
+	## **Stuck in the opponent.** The spear does not vanish when it connects:
+	## `t_new_spear_proc`'s state 0x256 copies the OTHER object's x into the
+	## projectile's x every frame, so the thing stays in him and the rope
+	## stays drawn while `t_scorp_rope_pull` reels him in.
+	var sp_stuck := false
 	var sp_tex := 0              ## _SpearWhichTexture: the rope's frame
 	var sp_node = null
 
@@ -666,6 +691,7 @@ func reset() -> void:
 		f.ani_count = 1
 		f.ani_index = 0
 		f.sp_live = false
+		f.sp_stuck = false
 		f.sp_thrown = false
 		f.noedge = false
 		f.tele_air = false
@@ -831,14 +857,20 @@ static func _overlap(a: Array, b: Array) -> bool:
 	return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
-func _start_attack(f: Fight, mv: int) -> void:
+func _start_attack(f: Fight, mv: int, dist: int) -> void:
 	f.st = St.ATTACK
 	f.move = mv
 	f.timer = _move_frames(mv)
 	f.timer_total = f.timer
 	f.connected = false
 	if audio:
-		audio.swing(mv == MV_UPPERCUT or mv == MV_HI_KICK or mv == MV_LO_KICK)
+		# `t_stat_do_hi_kick`, `t_stat_do_uppercut` and `_sweep_sounds` are the
+		# three that take `big_whoosh`; the punches and the flips take
+		# `whoosh`. The roundhouse and the low kick are not in either list, and
+		# they are put with the heavy kicks here.
+		var id := _strike_id(f, dist, f.stick_away)
+		audio.swing(id == _Stk.UPPERCUT or id == _Stk.HIKICK
+			or id == _Stk.ROUNDH or id == _Stk.SWEEP or id == _Stk.LOKICK)
 
 
 ## The special the fighter just asked for, or an empty dictionary.
@@ -958,7 +990,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				var b := _pressed_button(f, raw)
 				if b >= 0 and f.table[b]:
 					f.stick_away = (raw & dir_b) != 0
-					_start_attack(f, f.table[b])
+					_start_attack(f, f.table[b], absi(other.xi() - f.xi()))
 			return
 
 	# On the ground and free to act. **The special is asked first**: its last
@@ -1035,7 +1067,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			f.timer_total = 2
 			vx = 0
 		else:
-			_start_attack(f, mv)
+			_start_attack(f, mv, absi(other.xi() - f.xi()))
 			vx = 0
 	f.vx = vx
 
@@ -1078,7 +1110,7 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		b.health -= 1                        # chip
 		b.vx = int(_react_vx(stk) * ONE) * away
 		if audio:
-			audio.block()
+			audio.block_react(int(stk[_Stk.REACT]))
 		return
 
 	b.health -= dmg
@@ -1097,7 +1129,12 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	# doubled above 24 damage.
 	b.vx = int(_react_vx(stk) * ONE) * away
 	if audio:
-		audio.hit(dmg >= 24, stk[STK_Y] < 40)
+		# **The reaction picks the sound.** `t_r_hi_punch` plays `smack`,
+		# `t_r_lo_kick` plays `body_hit`, `t_r_uppercut` plays `big_smack`,
+		# and the ninja elbow's reaction -- `t_r_tusk_elbow` -- plays `stab`.
+		# Choosing Face2 or Body1 from whether the box sat above y = 40 got
+		# several of them wrong.
+		audio.hit_react(int(stk[_Stk.REACT]))
 	if b.health <= 0:
 		b.health = 0
 		a.wins += 1
@@ -1114,6 +1151,7 @@ static func _react_vx(stk: Array) -> float:
 func _throw_spear(f: Fight) -> void:
 	f.sp_thrown = true
 	f.sp_live = true
+	f.sp_stuck = false
 	f.sp_x = f.x
 	f.sp_y = f.y + SPEAR_DY * ONE
 	f.sp_vx = SPEAR_VX * f.facing
@@ -1144,6 +1182,17 @@ func _step_spear(f: Fight, other: Fight) -> void:
 	if not f.sp_live:
 		return
 	f.sp_tex += 1
+
+	if f.sp_stuck:
+		# State 0x256: the spear rides the man it is in, and lets go when the
+		# pull is over.
+		f.sp_x = other.x
+		f.sp_y = other.y + SPEAR_DY * ONE
+		if other.pulled_by != f:
+			f.sp_live = false
+			f.sp_stuck = false
+		return
+
 	f.sp_x += f.sp_vx
 	var sx := f.sp_x >> FX
 	if sx < WALL_L or sx > WALL_R:
@@ -1152,14 +1201,26 @@ func _step_spear(f: Fight, other: Fight) -> void:
 	if not _overlap(_spear_box(f), _body_box(other)):
 		return
 
-	f.sp_live = false
 	# A standing block stops it: `_stk_scorp_spear`'s seventh word is 1, a high
 	# attack, and that is what a standing block is for.
 	if other.st == St.BLOCK:
+		f.sp_live = false
 		other.health -= 1
 		if audio:
 			audio.block()
 		return
+
+	# **It sticks. It does not disappear.** On the hit, `t_new_spear_proc`
+	# hands the thread to `t_scorp_rope_pull`, zeroes the projectile's velocity
+	# and goes to state 0x256 -- which does one thing per frame:
+	#
+	#     projectile->0x0e = otherguy->0x0e
+	#
+	# The spear follows the man it is in, so the rope is drawn from Scorpion's
+	# hand to him the whole way back. Clearing `sp_live` here left the rope
+	# gone and the victim sliding across the floor on his own.
+	f.sp_stuck = true
+	f.sp_vx = 0
 
 	other.health -= int(_Stk.STK[_Stk.SCORP_SPEAR][STK_DMG])
 	other.buf.clear()
@@ -1170,7 +1231,10 @@ func _step_spear(f: Fight, other: Fight) -> void:
 	other.g = 0
 	other.y = _ground_y() * ONE             # ground_him
 	if audio:
-		audio.hit(false, false)
+		# `t_spear0` -- the reaction to being speared -- calls
+		# `his_ochar_sound` and `group_sound`, not one of the sixteen: the man
+		# who has just been harpooned shouts.
+		audio.voice()
 	if other.health <= 0:
 		other.health = 0
 		f.wins += 1
@@ -1461,28 +1525,58 @@ func _place_spear(f: Fight) -> void:
 	f.sp_node.place(hand_x, hand_y, tip_x, tip_y, f.sp_tex, scale_units)
 
 
-## demo.c's framing: a LEVEL camera -- no pitch, because tilting it down is
-## what makes a render look like a model viewer instead of a match -- at a
-## distance off the fighter's own height, eye two thirds of the way up, widened
-## when the two separate so both stay in frame. That widening is what the
-## engine's own camera limits at G + 0x468 and G + 0x470 are for.
+## **The camera is the engine's, not a framing.**
+##
+## It used to be a distance derived from the fighter's height with a widening
+## term for the gap -- invented, and it showed: the pair drifted in and out as
+## they moved. The binary has the real thing, in two numbers that agree with
+## each other:
+##
+##     init_players        G[0xb4] = RoundParam[1] - 399     the rightmost x
+##     t_sctele_calla_1    clamps to G[0x468] .. G[0x468] + 399
+##
+## **399 units wide, sliding between -550 and 950.** And that width is not
+## arbitrary either: `repell_func` leashes the two fighters at 304 units apart,
+## and 304 plus a 55-wide body either side is 414 -- near enough that the view
+## is built around the leash. The two always fit, so the camera never has to
+## widen and never has to choose whom to follow.
+##
+## The one thing this adds is what to do with a window wider than the original
+## 3:2. Cropping the top off would be the literal reading and would be worse to
+## play; instead the VERTICAL span is held at the original's 399/1.5 and the
+## extra aspect becomes extra width. That is the ordinary widescreen rule and
+## it is stated rather than hidden.
+const CAM_ASPECT := 1.5                  ## the original's 480x320 screen
+const CAM_TAN_HALF_FOV := 0.2217         ## this camera's own
+
+
 func _frame_camera() -> void:
 	if _cam == null:
 		return
-	var mid := (_scene_x(fighters[0]) + _scene_x(fighters[1])) * 0.5
-	var sep := absf(_scene_x(fighters[0]) - _scene_x(fighters[1]))
-
 	var vp := get_viewport().get_visible_rect().size
 	var aspect := vp.x / maxf(vp.y, 1.0)
-	# To fit a horizontal span S at this field of view:
-	#     S/2 <= dist * tan(fov/2) * aspect
-	# The span has to include the two BODIES, not just the gap between their
-	# centres, or a fighter at the edge is cut in half.
-	var span := sep + 2.2 * width
-	var need := span / (2.0 * 0.2217 * aspect)
-	var dist := maxf(height * 4.48, need)
 
-	_cam.position = Vector3(mid, height * 0.66, dist)
+	# Hold the vertical span the original shows, so a wide window gains width
+	# instead of losing height.
+	var span_v := float(CAM_WIDTH) / CAM_ASPECT * scale_units
+	var dist := span_v / (2.0 * CAM_TAN_HALF_FOV)
+	var span_h := span_v * aspect / scale_units          # in engine units
+
+	# The window slides between the two RoundParam edges, and its centre
+	# follows the midpoint of the pair -- which always fits, because the leash
+	# never lets them past 304 apart.
+	var mid := float(fighters[0].xi() + fighters[1].xi()) * 0.5
+	var half := span_h * 0.5
+	var lo := float(ROUNDPARAM_LEFT) + half
+	var hi := float(ROUNDPARAM_RIGHT) - half
+	if lo > hi:
+		# A window wider than the whole arena: centre it rather than clamp to
+		# nothing.
+		mid = float(ROUNDPARAM_LEFT + ROUNDPARAM_RIGHT) * 0.5
+	else:
+		mid = clampf(mid, lo, hi)
+
+	_cam.position = Vector3(mid * scale_units, height * 0.66, dist)
 	_cam.rotation = Vector3.ZERO
 	_cam.near = height * 0.15
 	_cam.far = maxf(_cam.far, dist * 4.0)
@@ -1556,7 +1650,7 @@ func _draw_boxes() -> void:
 		var r := _boxes[i * 2 + 1]
 		# A spear in flight IS this fighter's strike, so it is what the strike
 		# slot draws while it is out.
-		if f.sp_live:
+		if f.sp_live and not f.sp_stuck:
 			var pb := _spear_box(f)
 			r.mesh = _wire_box(
 				float(pb[0]) * scale_units, float(FLOOR_Y - pb[3]) * scale_units,

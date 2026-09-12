@@ -14,13 +14,35 @@
 ## 402 names are real files in `res/audio`** -- and the groups below carry the
 ## address each starts at, so they can be re-derived rather than trusted.
 ##
-## ## What is still a choice
+## ## The assignment is MEASURED too, now
 ##
-## **Which group goes with which move.** That mapping lives in the per-move
-## code -- every `ochar_sound(obj)` call site passes an index in `obj->field24`
-## -- and those call sites are in files that are not decompiled. So the group
-## CONTENTS are the game's and the ASSIGNMENT is mine, and the two are kept
-## visibly apart below.
+## It used to be a choice, and it was wrong in ways that could be heard. It is
+## not a choice any more, because **the groups have names in the binary**:
+## sixteen `_tab_rsnd_*` symbols in `__DATA`, in order, and `rsnd_func(obj, N)`
+## takes N as the index into exactly that list.
+##
+##     0 enemy_boom   1 sk_bonus_win  2 splish      3 stab
+##     4 footstep     5 big_block     6 small_block 7 smack
+##     8 med_smack    9 klang        10 big_smack  11 rocks
+##    12 body_hit    13 ground       14 whoosh     15 big_whoosh
+##
+## Scanning every call site of `rsnd_func` (0x00057dbc) for the literal each
+## one passes then says which sound belongs to which event, by name:
+##
+##     t_r_hi_punch, t_r_duck_punch, t_r_duck_kickh, t_r_duck_kickl    7 smack
+##     t_r_lo_punch, t_r_lo_kick, t_r_sweep, t_r_stick_sweep      12 body_hit
+##     t_r_hi_kick, t_r_uppercut, t_r_roundhouse, every t_r_combo 10 big_smack
+##     t_r_flip_punch, t_r_flip_kick, t_r_elbow_knee               8 med_smack
+##     t_r_tusk_elbow (which is the NINJA elbow's reaction)         3 stab
+##     t_r_combo_klang                                             9 klang
+##     t_jhp4, t_do_flip_punch, t_do_flip_kick, t_stat_do_duck_*   14 whoosh
+##     t_stat_do_hi_kick, t_stat_do_uppercut, _sweep_sounds    15 big_whoosh
+##     t_b_punch, t_b_lo_punch, t_b_weak                     6 small_block
+##     t_b_hard, t_b_uppercut, t_b_combo_hard                  5 big_block
+##
+## This port was picking Face2 or Body1 from whether the strike box sat above
+## y = 40, and Bighit from whether the damage passed 24. Both of those are now
+## gone: the sound comes from the same reaction id the knockback does.
 ##
 ## ## No asset ships here
 extends Node
@@ -40,6 +62,63 @@ const GRP_FALL := ["Gudfall1", "Gudfall2", "Gudfall3", "Gudfall4"]  # @0017a2ac
 ## names say which: "Scorcome" and "Scorget" are "come here" and "get over
 ## here".
 const GRP_SCORP := ["Scorcome", "Scorget", "Scormask", "Scortele"]
+
+## Two more the fight now needs, in the engine's own order.
+const GRP_STAB := ["Stab1", "Bigstab1", "Bigstab2", "Bigstab3"]   # @0017a010
+const GRP_KLANG := ["Robball2", "Robball1"]                       # @0017a1a4
+
+## **`_tab_rsnd_*`, by the index `rsnd_func` takes.** Empty where the group is
+## real but this build never plays it.
+const RSND := {
+	3: GRP_STAB,
+	4: GRP_FOOT,
+	5: GRP_BLOCK,        # big_block
+	6: GRP_BLOCK,        # small_block -- both hold the one Block1
+	7: GRP_FACE,         # smack
+	8: GRP_BIG3,         # med_smack
+	9: GRP_KLANG,
+	10: GRP_BIG12,       # big_smack
+	12: GRP_BODY,        # body_hit
+	13: GRP_FALL,        # ground
+	14: GRP_WHOOSH,
+	15: GRP_BWHOOSH,
+}
+
+## The indices, by the name the binary gives them.
+const SND_STAB := 3
+const SND_FOOT := 4
+const SND_BIG_BLOCK := 5
+const SND_SMALL_BLOCK := 6
+const SND_SMACK := 7
+const SND_MED_SMACK := 8
+const SND_KLANG := 9
+const SND_BIG_SMACK := 10
+const SND_BODY := 12
+const SND_GROUND := 13
+const SND_WHOOSH := 14
+const SND_BIG_WHOOSH := 15
+
+## Which `rsnd_func` index each REACTION plays. The key is the reaction id out
+## of a strike record's fifth word -- see umk3_strikes.gd.
+const REACT_SND := {
+	0: SND_BIG_SMACK,    # t_r_hi_kick
+	1: SND_BODY,         # t_r_lo_kick
+	2: SND_SMACK,        # t_r_hi_punch
+	3: SND_BODY,         # t_r_lo_punch
+	4: SND_BODY,         # t_r_sweep
+	5: SND_SMACK,        # t_r_duck_punch
+	6: SND_SMACK,        # t_r_duck_kickh
+	7: SND_SMACK,        # t_r_duck_kickl
+	8: SND_BIG_SMACK,    # t_r_uppercut
+	9: SND_MED_SMACK,    # t_r_elbow_knee
+	10: SND_MED_SMACK,   # t_r_flip_kick
+	11: SND_MED_SMACK,   # t_r_flip_punch
+	12: SND_BIG_SMACK,   # t_r_roundhouse
+	45: SND_BODY,        # t_r_slide -- not recovered, the body is the guess
+	76: SND_STAB,        # t_r_tusk_elbow, which IS the ninja elbow's
+	115: SND_BIG_SMACK,  # t_r_scorp_tele
+	120: SND_GROUND,     # t_r_ermac_slam
+}
 
 ## How many sound effects can overlap. A fighting game plays short one-shot
 ## voices, so a small ring is enough and a stolen voice is better than a
@@ -73,7 +152,7 @@ func _ready() -> void:
 	_music.finished.connect(_loop_music)
 
 	for g in [GRP_FOOT, GRP_BLOCK, GRP_FACE, GRP_BIG3, GRP_BIG12, GRP_BODY,
-			GRP_WHOOSH, GRP_BWHOOSH, GRP_FALL, GRP_SCORP]:
+			GRP_WHOOSH, GRP_BWHOOSH, GRP_FALL, GRP_SCORP, GRP_STAB, GRP_KLANG]:
 		for name in g:
 			_load(name)
 	print("[umk3] audio: %d sounds at %d Hz%s" % [loaded, rate,
@@ -173,39 +252,55 @@ func play_group(g: Array, gain: float) -> void:
 	p.play()
 
 
-# ============================== the assignment -- CHOSEN, not read
-#
-# Which group fires for which event. The groups above are the game's; this is
-# not. When the `ochar_sound` call sites are decompiled, every one of these
-# becomes a measured index and this block goes away.
+# ====================== the assignment -- MEASURED, from `rsnd_func`'s index
 
+## Play one of the sixteen `_tab_rsnd_*` tables, by the index the engine uses.
+## Everything below is a name for one of these calls.
+func rsnd(index: int, gain: float) -> void:
+	if RSND.has(index):
+		play_group(RSND[index], gain)
+
+
+## The swing. `t_jhp4` and the flip attacks take 14; `t_stat_do_hi_kick`,
+## `t_stat_do_uppercut` and `_sweep_sounds` take 15.
 func swing(heavy: bool) -> void:
-	play_group(GRP_BWHOOSH if heavy else GRP_WHOOSH, 0.55)
+	rsnd(SND_BIG_WHOOSH if heavy else SND_WHOOSH, 0.55)
 
 
-func hit(heavy: bool, high: bool) -> void:
-	if heavy:
-		play_group(GRP_BIG12, 0.95)
-	else:
-		play_group(GRP_FACE if high else GRP_BODY, 0.85)
+## The impact, from the strike's own reaction.
+func hit_react(reaction: int) -> void:
+	rsnd(int(REACT_SND.get(reaction, SND_SMACK)), 0.9)
+
+
+## A blocked hit: `t_b_hard` and `t_b_uppercut` take 5, `t_b_punch` and
+## `t_b_weak` take 6. Which of the two a given reaction belongs to is the one
+## inference left here, and it is drawn the obvious way -- the heavy impacts
+## block heavily.
+func block_react(reaction: int) -> void:
+	var s: int = int(REACT_SND.get(reaction, SND_SMACK))
+	rsnd(SND_BIG_BLOCK if s == SND_BIG_SMACK or s == SND_MED_SMACK
+		else SND_SMALL_BLOCK, 0.7)
 
 
 func block() -> void:
-	play_group(GRP_BLOCK, 0.7)
+	rsnd(SND_SMALL_BLOCK, 0.7)
 
 
 func step() -> void:
-	play_group(GRP_FOOT, 0.30)
+	rsnd(SND_FOOT, 0.30)
 
 
 func land() -> void:
-	play_group(GRP_FOOT, 0.55)
+	rsnd(SND_FOOT, 0.55)
 
 
 func fall() -> void:
-	play_group(GRP_FALL, 0.8)
+	rsnd(SND_GROUND, 0.8)
 
 
+## The character's own voice. `t_spear0` -- the reaction to being speared --
+## reaches for `his_ochar_sound` and `group_sound` rather than one of the
+## sixteen, so a speared fighter shouts rather than being smacked.
 func voice() -> void:
 	play_group(GRP_SCORP, 1.0)
 
