@@ -63,6 +63,52 @@ const GRP_FALL := ["Gudfall1", "Gudfall2", "Gudfall3", "Gudfall4"]  # @0017a2ac
 ## here".
 const GRP_SCORP := ["Scorcome", "Scorget", "Scormask", "Scortele"]
 
+# ===================== the character's VOICE, which was missing entirely
+#
+# A third sound path runs beside `rsnd_func`. Every attack, every jump, every
+# reaction also calls `group_sound` (0x000580a4), and that one does
+#
+#     MKEvent_Add(2, 1, (_ochar_voice_groups[character] << 4) + obj->0x1c, 0)
+#
+# so it picks the character's VOICE SET and then which kind of noise. Scanning
+# its call sites for the index each passes gives the kinds outright:
+#
+#     0  t_do_flip_kick, t_do_flip_punch, t_do_jumpup_punch, _sweep_sounds,
+#        t_stat_do_lo_kick, t_lfly5                              the ATTACK grunt
+#     1  t_do_jump_up, t_do_flip                                 the JUMP
+#     2  t_r_hi_kick and twenty other t_r_*                      taking a HIT
+#     3  _grab_voice                                             a THROW
+#     7  run_setup                                               RUNNING
+#     9  t_fall_down_pit, t_local_r_laser                        FALLING
+#
+# And `_ochar_voice_groups` (0x0016f55c) says which set: **Scorpion is 1**, the
+# second of the nine, and the nine are the prefixes the group members carry --
+# Pb, Vp, Df, Ebl, Jh, Rob, Lk, Am, Sk. So Scorpion speaks with the `Vp*`
+# files, and every one of them is a real file in `res/audio`.
+#
+# **The stride is not uniform** -- `_gs_death` holds one take per voice set and
+# `_gs_face_hit_voice` holds three -- so these are taken by NAME rather than by
+# arithmetic on the group, and the name is what the check rests on.
+const VOICE_ATTACK := ["Vpatt1", "Vpatt2"]      # _gs_attack, index 1
+const VOICE_JUMP := ["Vpjump"]                  # _gs_jump
+const VOICE_FACE := ["Vpface1", "Vpface2"]      # _gs_face_hit_voice
+const VOICE_BODY := ["Vpbody1", "Vpbody2"]
+const VOICE_WASTED := ["Vpwast1", "Vpwast2"]    # _gs_wasted
+const VOICE_RUN := ["Vprun"]                    # _gs_run
+const VOICE_GRAB := ["Vpgrab"]                  # _gs_grab
+const VOICE_DEATH := ["Vpdeath"]                # _gs_death
+const VOICE_TRIP := ["Vptrip"]                  # _gs_tripped_voice
+
+## `group_sound`'s index -> the files it reaches for Scorpion.
+const VOICE := {
+	0: VOICE_ATTACK,
+	1: VOICE_JUMP,
+	2: VOICE_FACE,
+	3: VOICE_GRAB,
+	7: VOICE_RUN,
+	9: VOICE_WASTED,
+}
+
 ## Two more the fight now needs, in the engine's own order.
 const GRP_STAB := ["Stab1", "Bigstab1", "Bigstab2", "Bigstab3"]   # @0017a010
 const GRP_KLANG := ["Robball2", "Robball1"]                       # @0017a1a4
@@ -152,7 +198,9 @@ func _ready() -> void:
 	_music.finished.connect(_loop_music)
 
 	for g in [GRP_FOOT, GRP_BLOCK, GRP_FACE, GRP_BIG3, GRP_BIG12, GRP_BODY,
-			GRP_WHOOSH, GRP_BWHOOSH, GRP_FALL, GRP_SCORP, GRP_STAB, GRP_KLANG]:
+			GRP_WHOOSH, GRP_BWHOOSH, GRP_FALL, GRP_SCORP, GRP_STAB, GRP_KLANG,
+			VOICE_ATTACK, VOICE_JUMP, VOICE_FACE, VOICE_BODY, VOICE_WASTED,
+			VOICE_RUN, VOICE_GRAB, VOICE_DEATH, VOICE_TRIP]:
 		for name in g:
 			_load(name)
 	print("[umk3] audio: %d sounds at %d Hz%s" % [loaded, rate,
@@ -265,11 +313,22 @@ func rsnd(index: int, gain: float) -> void:
 ## `t_stat_do_uppercut` and `_sweep_sounds` take 15.
 func swing(heavy: bool) -> void:
 	rsnd(SND_BIG_WHOOSH if heavy else SND_WHOOSH, 0.55)
+	# Every move proc that takes a whoosh takes a `group_sound 0` beside it.
+	group_voice(0, 0.7)
 
 
-## The impact, from the strike's own reaction.
+## `group_sound`: the character's own voice, by the index its call sites pass.
+func group_voice(index: int, gain := 0.85) -> void:
+	if VOICE.has(index):
+		play_group(VOICE[index], gain)
+
+
+## The impact, from the strike's own reaction -- and the grunt that goes with
+## it. **Both**, because the engine plays both: every `t_r_*` calls
+## `rsnd_func` for the thump and `group_sound` with 2 for the voice.
 func hit_react(reaction: int) -> void:
 	rsnd(int(REACT_SND.get(reaction, SND_SMACK)), 0.9)
+	group_voice(2)
 
 
 ## A blocked hit: `t_b_hard` and `t_b_uppercut` take 5, `t_b_punch` and
@@ -292,6 +351,19 @@ func step() -> void:
 
 func land() -> void:
 	rsnd(SND_FOOT, 0.55)
+
+
+## `t_do_jump_up` calls `group_sound` with 1.
+func jump() -> void:
+	group_voice(1, 0.7)
+
+
+## `t_stung_by_scorpion` -- being harpooned -- calls `rsnd_func` with 3, the
+## STAB table. Not a voice: this port was playing Scorpion's own line on the
+## man who got hit.
+func speared() -> void:
+	rsnd(SND_STAB, 0.95)
+	group_voice(2)
 
 
 func fall() -> void:

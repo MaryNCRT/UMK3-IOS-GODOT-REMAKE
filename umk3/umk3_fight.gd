@@ -234,15 +234,30 @@ const TELE_G := 0x5000                   ## measured, 0.3125
 ## from a state the animation does not describe. One in is where the arm is out.
 const SPEAR_THROW_FRAME := 1
 
-## Reeling the victim in. `t_scorp_rope_pull` (0x0007c5fc) is the puller's side
-## and `t_tugged_in_by_spear` (0x0007c504) the victim's; the two rates they set
-## -- 3 and 8 -- are measured, the SPEED is not. Ten a frame is the rope going
-## back in as fast as it went out, and it stops at the engine's own idea of
-## close range.
-const PULL_VX := int(10.0 * ONE)         ## chosen -- the rope's own speed
-const PULL_STOP := _Stk.CLOSE            ## measured, t_knee_check's 0x4a
+## **Reeling the victim in, and now every number of it is measured.**
+## `t_tugged_in_by_spear` (0x0007c504) is the victim's own thread and it reads
+## straight through:
+##
+##     state 0     obj->0x1c = 0x80000; towards_x_vel       8.0 a frame, toward
+##                 set_no_block                             he cannot guard
+##     state 0x44f get_x_dist; while > 0x40 keep dragging   stops at 64
+##                 then stop_me_player
+##                      obj->0x40 = 0x25   -> animation 37, SCSTUNNED
+##                      pose_a9_manual
+##                      obj->0x1c = 8; init_anirate          rate 8
+##                      obj->0x48 = 0x40                     64 frames of it
+##     state 0x45f next_anirate, count 0x48 down, and LEAVE EARLY if
+##                 obj->0x5c is set -- which is the flag a strike sets
+##
+## So the spear does not just hurt: it drags you in and leaves you **stunned
+## for sixty-four frames, unable to block, and the stun breaks the moment
+## anything hits you**. That is the whole point of the move and none of it was
+## here -- the victim went into an ordinary reaction and walked away.
+const PULL_VX := int(8.0 * ONE)          ## measured, 0x80000 + towards_x_vel
+const PULL_STOP := 0x40                  ## measured, t_tugged_in_by_spear
+const STUN_FRAMES := 0x40                ## measured, obj->0x48
 const RATE_PULL := 3                     ## measured, t_scorp_rope_pull
-const RATE_TUGGED := 8                   ## measured, t_tugged_in_by_spear
+const RATE_TUGGED := 8                   ## measured, init_anirate after the pull
 
 
 ## How hard a hit pushes the victim back, and for how long.
@@ -561,7 +576,7 @@ const GROUND_OFFSET := [
 ## dragged across the floor is something that happens over many frames and a
 ## reaction is over when its animation is.
 enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT, SPECIAL,
-	SPEARED, THROWN, FALLING, DOWN, GETUP, DEAD, VICTORY }
+	SPEARED, THROWN, FALLING, DOWN, GETUP, DEAD, VICTORY, STUNNED }
 
 ## The keyboard, the same map the C build uses: player one is the left hand
 ## plus U I O J K L, player two is the arrows and the numeric keypad.
@@ -1119,19 +1134,29 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.special_name = ""
 			return
 		St.SPEARED:
-			# `t_tugged_in_by_spear`: dragged toward whoever threw it, with no
-			# input, until he is close enough to be hit.
+			# `t_tugged_in_by_spear` state 0x44f: dragged at 8.0 toward
+			# whoever threw it until `get_x_dist` comes inside 0x40, then
+			# stopped and STUNNED.
 			var puller = f.pulled_by
 			if puller == null or absi(puller.xi() - f.xi()) <= PULL_STOP:
 				f.pulled_by = null
 				f.vx = 0
-				f.st = St.HIT
-				f.timer = _ani_length(ANI_HIT,
-					maxi(1, RATE_STANCE + rate_bias))
+				f.st = St.STUNNED
+				f.timer = STUN_FRAMES
 				f.timer_total = f.timer
 				f.table = BT_NULL
 			else:
 				f.vx = PULL_VX * (1 if puller.xi() > f.xi() else -1)
+			return
+		St.STUNNED:
+			# State 0x45f: sixty-four frames of SCSTUNNED at rate 8, and any
+			# strike ends it early -- `obj->0x5c` is the flag a hit sets, and
+			# this state watches it. So the stun is a free hit, which is what
+			# the move is for.
+			f.vx = 0
+			if f.timer == 0:
+				f.st = St.STANCE
+				f.table = BT_STANCE
 			return
 		St.JUMP:
 			# A jump keeps whatever horizontal velocity it started with and
@@ -1199,6 +1224,8 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		else:
 			f.vx = 0
 		f.st = St.JUMP
+		if audio:
+			audio.jump()                 # t_do_jump_up's group_sound 1
 		# Straight up and angled are DIFFERENT TABLES -- which is why the
 		# engine ships both bt_jump and bt_angle_jump.
 		f.table = BT_ANGLE_JUMP if (raw & (dir_f | dir_b)) else BT_JUMP
@@ -1248,11 +1275,20 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	if stk.is_empty():
 		return
 
-	# The active window: from a quarter of the way in to three quarters. A
-	# choice, and the only one left in this function.
-	var elapsed := a.timer_total - a.timer
-	if elapsed < a.timer_total / 4 or elapsed > (a.timer_total * 3) / 4:
-		return
+	# **The teleport punch lands when HE does.** Its clip is three frames and
+	# its flight is nineteen, so timing the strike off the animation made it
+	# live only in the first third -- as he passed the opponent on the way up,
+	# not when he arrived. `vy > 0` is the descent, which is the half of the
+	# arc the punch belongs to.
+	if a.st == St.SPECIAL and a.special == _Moves.SP_TELEPUNCH:
+		if a.vy <= 0:
+			return
+	else:
+		# The active window: from a quarter of the way in to three quarters. A
+		# choice, and the only one left in this function.
+		var elapsed := a.timer_total - a.timer
+		if elapsed < a.timer_total / 4 or elapsed > (a.timer_total * 3) / 4:
+			return
 	if not _overlap(_strike_box(a, stk), _body_box(b)):
 		return
 
@@ -1263,8 +1299,9 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 
 	# A block stops it. **The sweep is level 2 and a standing block does not
 	# stop a low attack** -- that is what the seventh word is for.
-	var blocked: bool = b.st == St.BLOCK and (
-		int(stk[STK_LEVEL]) == 1 or b.table == BT_DUCK)
+	# `set_no_block` is called on the man being dragged, and the stun that
+	# follows it does not guard either.
+	var blocked: bool = b.st == St.BLOCK and b.st != St.SPEARED 		and (int(stk[STK_LEVEL]) == 1 or b.table == BT_DUCK)
 	if blocked:
 		b.health -= 1                        # chip
 		b.vx = int(_react_vx(stk) * ONE) * away
@@ -1474,10 +1511,10 @@ func _step_spear(f: Fight, other: Fight) -> void:
 	other.g = 0
 	other.y = _ground_y() * ONE             # ground_him
 	if audio:
-		# `t_spear0` -- the reaction to being speared -- calls
-		# `his_ochar_sound` and `group_sound`, not one of the sixteen: the man
-		# who has just been harpooned shouts.
-		audio.voice()
+		# `t_stung_by_scorpion` (0x000a361c) calls `rsnd_func` with 3 -- the
+		# STAB table -- and the victim's own hit voice. This was playing
+		# Scorpion's line on the man who got hit.
+		audio.speared()
 	if other.health <= 0:
 		other.health = 0
 		f.wins += 1
@@ -1694,6 +1731,8 @@ func _ani_for(f: Fight) -> Array:
 			return [ANI_SWEEPUP if f.react == 4 else ANI_GETUP, RATE_GETUP]
 		St.VICTORY:
 			return [ANI_VICTORY, RATE_STANCE]
+		St.STUNNED:
+			return [ANI_STUNNED, RATE_TUGGED]
 		St.SPEARED:
 			# `t_tugged_in_by_spear` sets rate 8 -- slow, because he is being
 			# dragged rather than reacting.
@@ -1981,7 +2020,7 @@ func _attack_name(f: Fight, which: int) -> String:
 func status() -> String:
 	var names := ["STANCE", "WALK-F", "WALK-B", "DUCK", "BLOCK", "JUMP",
 		"ATTACK", "HIT", "SPECIAL", "SPEARED", "THROWN", "FALLING", "DOWN",
-		"GETUP", "DEAD", "VICTORY"]
+		"GETUP", "DEAD", "VICTORY", "STUNNED"]
 	var out := "%d fps   pose %.1f ms   tick %d
 " % [
 		Engine.get_frames_per_second(),

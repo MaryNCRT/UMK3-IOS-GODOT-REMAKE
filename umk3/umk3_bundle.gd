@@ -191,7 +191,11 @@ func _character(stem: String) -> void:
 func _sounds() -> void:
 	for g in [_Audio.GRP_FOOT, _Audio.GRP_BLOCK, _Audio.GRP_FACE, _Audio.GRP_BIG3,
 			_Audio.GRP_BIG12, _Audio.GRP_BODY, _Audio.GRP_WHOOSH,
-			_Audio.GRP_BWHOOSH, _Audio.GRP_FALL, _Audio.GRP_SCORP]:
+			_Audio.GRP_BWHOOSH, _Audio.GRP_FALL, _Audio.GRP_SCORP,
+			_Audio.GRP_STAB, _Audio.GRP_KLANG, _Audio.VOICE_ATTACK,
+			_Audio.VOICE_JUMP, _Audio.VOICE_FACE, _Audio.VOICE_BODY,
+			_Audio.VOICE_WASTED, _Audio.VOICE_RUN, _Audio.VOICE_GRAB,
+			_Audio.VOICE_DEATH, _Audio.VOICE_TRIP]:
 		for name in g:
 			if not _add("audio/" + name + ".wav"):
 				_missing.append("audio/" + name + ".wav")
