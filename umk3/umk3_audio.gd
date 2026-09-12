@@ -311,10 +311,30 @@ func rsnd(index: int, gain: float) -> void:
 
 ## The swing. `t_jhp4` and the flip attacks take 14; `t_stat_do_hi_kick`,
 ## `t_stat_do_uppercut` and `_sweep_sounds` take 15.
-func swing(heavy: bool) -> void:
+func swing(heavy: bool, voice := true) -> void:
 	rsnd(SND_BIG_WHOOSH if heavy else SND_WHOOSH, 0.55)
-	# Every move proc that takes a whoosh takes a `group_sound 0` beside it.
-	group_voice(0, 0.7)
+	# Every move proc that takes a whoosh takes a `group_sound 0` beside it --
+	# every one except `t_stat_do_uppercut`, which takes the whoosh alone.
+	if voice:
+		group_voice(0, 0.7)
+
+
+## The specials' own lines.
+##
+## `tl_do_scorp_tele` calls `ochar_sound` with 12 and the spear's procs call
+## nothing a scan can see, so **the index is not recovered** -- `ochar_sound`
+## goes through `MKEvent_Add(2, 3, ...)` and that subtype's table has not been
+## found. What IS unambiguous is the names: Scorpion's own group at 0x0017b028
+## holds `Scorcome`, `Scorget`, `Scormask` and `Scortele`, and a teleport and a
+## "get over here" do not need an index to be identified.
+func special(which: int) -> void:
+	match which:
+		1:                                   # SP_SPEAR
+			play_group(["Scorget"], 1.0)
+		2:                                   # SP_TELEPUNCH
+			play_group(["Scortele"], 1.0)
+		_:
+			play_group(GRP_SCORP, 1.0)
 
 
 ## `group_sound`: the character's own voice, by the index its call sites pass.

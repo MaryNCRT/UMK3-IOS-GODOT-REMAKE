@@ -227,6 +227,7 @@ const SPEAR_VX := int(10.0 * ONE)        ## measured, 0xa0000
 const TELE_VX := int(10.0 * ONE)         ## measured, 0xa0000
 const TELE_VY := -int(3.0 * ONE)         ## measured, 0xa0000 - 0xd0000
 const TELE_G := 0x5000                   ## measured, 0.3125
+const TELE_RATE := 3                     ## measured, obj->0x28 via t_flight_call
 
 ## Which frame of the spear animation lets go of it.
 ##
@@ -644,6 +645,8 @@ class Fight extends RefCounted:
 	var noedge := false
 	## The teleport has left the ground, so landing ends it.
 	var tele_air := false
+	## And it keeps the landing frame, so the punch gets one.
+	var tele_landed := false
 	## Whoever's spear is dragging him, while St.SPEARED.
 	var pulled_by = null
 	## Which reaction is playing, so the knockdown knows what it came from.
@@ -731,6 +734,9 @@ var last_special := ""
 
 ## Frames since somebody hit the floor.
 var round_over := 0
+## The camera window, in engine units, so the teleport can wrap him across it.
+var cam_mid := 0
+var cam_span := float(CAM_WIDTH)
 var hud = null
 
 var _accum := 0.0
@@ -1001,9 +1007,27 @@ func _start_attack(f: Fight, mv: int, dist: int) -> void:
 		# three that take `big_whoosh`; the punches and the flips take
 		# `whoosh`. The roundhouse and the low kick are not in either list, and
 		# they are put with the heavy kicks here.
+		# **Every move proc, read one by one.** `rsnd_func`'s index, and
+		# whether a `group_sound` goes with it:
+		#
+		#     t_jhp4, t_jmp4                       14 whoosh   + voice
+		#     t_stat_do_duck_punch/kickh/kickl     14 whoosh   + voice
+		#     t_do_flip_punch, t_do_flip_kick      14 whoosh   + voice
+		#     t_do_jumpup_punch, t_do_jumpup_kick  14 whoosh   + voice
+		#     t_stat_do_hi_kick, t_stat_do_lo_kick 15 big      + voice
+		#     _sweep_sounds                        15 big      + voice
+		#     t_stat_do_uppercut                   15 big      NO VOICE
+		#
+		# The uppercut is the only one that swings without a grunt, and that
+		# is worth keeping rather than tidying away.
+		#
+		# `t_do_knee`, `t_do_elbow`, `t_joy_roundhouse` and `t_joy_sweep_kick`
+		# play NOTHING of their own -- they are reached from a move that has
+		# already made its noise -- so those inherit here, which is a reading
+		# of the call graph rather than a measurement of its own.
 		var id := _strike_id(f, dist, f.stick_away)
-		audio.swing(id == _Stk.UPPERCUT or id == _Stk.HIKICK
-			or id == _Stk.ROUNDH or id == _Stk.SWEEP or id == _Stk.LOKICK)
+		var heavy := id == _Stk.UPPERCUT or id == _Stk.HIKICK 			or id == _Stk.ROUNDH or id == _Stk.SWEEP or id == _Stk.LOKICK
+		audio.swing(heavy, id != _Stk.UPPERCUT)
 
 
 ## The special the fighter just asked for, or an empty dictionary.
@@ -1097,19 +1121,28 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				if not f.sp_thrown and f.ani_index >= SPEAR_THROW_FRAME:
 					_throw_spear(f)
 			elif f.special == _Moves.SP_TELEPUNCH:
+				# `t_sctele_calla_1`: off one edge, on at the other.
+				_tele_wrap(f)
 				# It ends when he lands, not when the animation runs out: the
 				# arc is nineteen frames and the clip is three.
 				if airborne:
 					f.tele_air = true
 				elif f.tele_air:
-					f.noedge = false
+					# **One more tick on the ground before the state ends.**
+					# `_resolve_hits` runs after `_think`, so ending the move
+					# on the landing frame threw away the frame the punch
+					# actually arrives on.
 					f.vx = 0
-					f.st = St.STANCE
-					f.table = BT_STANCE
-					f.special = 0
-					f.special_name = ""
-					if audio:
-						audio.land()
+					if f.tele_landed:
+						f.noedge = false
+						f.st = St.STANCE
+						f.table = BT_STANCE
+						f.special = 0
+						f.special_name = ""
+					else:
+						f.tele_landed = true
+						if audio:
+							audio.land()
 				return
 			if f.timer == 0:
 				# **The rope outlives the throw.** Four frames of animation
@@ -1193,18 +1226,38 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		f.vx = 0
 		f.sp_thrown = false
 		f.tele_air = false
+		f.tele_landed = false
 		f.noedge = false
+		if audio:
+			audio.special(f.special)
 		if f.special == _Moves.SP_TELEPUNCH:
-			# tl_do_scorp_tele, in order: face the opponent, then leave the
-			# ground with the three numbers it sets. `set_noedge` is the
-			# reason he is allowed to go through the wall he lands beyond.
+			# **It is a screen WRAP, and it goes backwards.** Three functions
+			# had to be read to see it and every one of them says so:
+			#
+			#   tl_do_scorp_tele   face_opponent, then FLIP_MULTI -- so he
+			#                      ends up facing away -- then set_noedge and
+			#                      the three numbers, and hands off to the
+			#                      proc at GOT 0x000f37f4
+			#   that slot is       t_flight_call (0x00055aec), which copies
+			#                      0x20 into the part's vy and 0x24 into its
+			#                      gravity, and calls AWAY_X_VEL with 0x1c --
+			#                      away, not towards
+			#   t_sctele_calla_1   every frame: when his x passes the camera
+			#                      edge he is travelling toward, it writes the
+			#                      OPPOSITE edge into part->0x0e
+			#
+			# So he leaps AWAY from the opponent, flies off one side of the
+			# screen and comes back on the other. That is why the move is
+			# called a teleport, and it is why this port -- which sent him
+			# forward at ten a frame and let him overshoot -- looked like it
+			# was throwing him across the stage.
 			f.facing = 1 if other.xi() >= f.xi() else -1
-			f.vx = TELE_VX * f.facing
+			f.vx = -TELE_VX * f.facing        # away_x_vel
+			f.facing = -f.facing              # flip_multi
 			f.vy = TELE_VY
 			f.g = TELE_G
 			f.noedge = true
-		if audio:
-			audio.voice()
+			f.ani_rate = TELE_RATE
 		return
 
 	var btn := _pressed_button(f, raw)
@@ -1281,7 +1334,7 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	# not when he arrived. `vy > 0` is the descent, which is the half of the
 	# arc the punch belongs to.
 	if a.st == St.SPECIAL and a.special == _Moves.SP_TELEPUNCH:
-		if a.vy <= 0:
+		if a.vy <= 0 and not a.tele_landed:
 			return
 	else:
 		# The active window: from a quarter of the way in to three quarters. A
@@ -1425,6 +1478,38 @@ func _hit_the_floor(f: Fight) -> void:
 ## How far back this strike's reaction throws the victim, in units a frame.
 static func _react_vx(stk: Array) -> float:
 	return float(_Stk.REACT_VX.get(int(stk[_Stk.REACT]), 0.0))
+
+
+## `t_sctele_calla_1` (0x00040aa0), the half of it that matters here.
+##
+## It reads the camera window -- `G[0x468]` and that plus `0x18c + 3`, the same
+## 399 the camera is built on -- and the fighter's own x velocity, and when he
+## crosses the edge he is heading for it writes the opposite edge straight into
+## `part->0x0e`. No interpolation, no fade: one assignment, which is what makes
+## it read as a teleport rather than a very fast run.
+##
+## **The window is the engine's 399**, not the one this port happens to show.
+## At the original 3:2 the two are the same and the wrap lands exactly on the
+## screen edge, where it cannot be seen; on a wider window it happens a little
+## way inside the frame. Using the visible span instead would put the edge
+## beyond the arc's reach and the move would simply not teleport, which is what
+## it did when this was tried the other way round.
+## Is either fighter mid-teleport?
+func _teleporting() -> bool:
+	for f in fighters:
+		if f.st == St.SPECIAL and f.special == _Moves.SP_TELEPUNCH:
+			return true
+	return false
+
+
+func _tele_wrap(f: Fight) -> void:
+	var half := CAM_WIDTH / 2
+	var left := cam_mid - half
+	var right := cam_mid + half
+	if f.vx < 0 and f.xi() < left:
+		f.x = right * ONE
+	elif f.vx > 0 and f.xi() > right:
+		f.x = left * ONE
 
 
 ## Let go of the spear. `t_new_spear_proc`, transcribed.
@@ -1874,6 +1959,14 @@ func _frame_camera() -> void:
 	# The window slides between the two RoundParam edges, and its centre
 	# follows the midpoint of the pair -- which always fits, because the leash
 	# never lets them past 304 apart.
+	# **The camera does not follow a teleporting fighter.** In the engine
+	# `tl_do_scorp_tele` spawns `t_s_t_scroller` to drive the scroll for the
+	# duration and calls `sans_repell_3`, so the view stops tracking him --
+	# and it has to, because the wrap is measured against the view's own edge.
+	# Letting the midpoint chase him moved that edge away as fast as he flew at
+	# it, and the wrap never fired.
+	if _teleporting():
+		return
 	var mid := float(fighters[0].xi() + fighters[1].xi()) * 0.5
 	var half := span_h * 0.5
 	var lo := float(ROUNDPARAM_LEFT) + half
@@ -1885,6 +1978,8 @@ func _frame_camera() -> void:
 	else:
 		mid = clampf(mid, lo, hi)
 
+	cam_mid = int(mid)
+	cam_span = span_h
 	_cam.position = Vector3(mid * scale_units, height * 0.66, dist)
 	_cam.rotation = Vector3.ZERO
 	_cam.near = height * 0.15
