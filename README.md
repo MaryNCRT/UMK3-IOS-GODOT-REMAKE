@@ -1,161 +1,144 @@
-# UMK3 — Godot
+# Ultimate Mortal Kombat 3 — Godot Remake
 
-The asset half of the [UMK3 decompilation](../../umk3repo), in Godot.
+**A playable remake of the 2011 iOS release of *Ultimate Mortal Kombat 3*, rebuilt in Godot 4 — where every number in the fight comes out of the original binary rather than out of somebody's judgement.**
 
-## What this is
+[Getting started](docs/GETTING-STARTED.md) · [Methodology](docs/METHODOLOGY.md) · [Architecture](docs/ARCHITECTURE.md) · [Fight system](docs/FIGHT-SYSTEM.md) · [Animation](docs/ANIMATION.md) · [Progress](docs/PROGRESS.md) · [AI disclosure](AI-DISCLOSURE.md) · [Español](README.es.md)
 
-`.meshset` and `.scene` readers written in GDScript, ported from the C
-loaders in that project — which were themselves derived from the
-disassembly of `LIME_LoadMeshSet` (armv7 `0x0005ea34`) and
-`LIME_LoadScene` (`0x0005f0ac`), and validated against 604 of the 605
-shipped files.
+**This is the second half of a two-repository project.** The first is
+[**Ultimate-Mortal-Kombat-3-iOS-Recomp**](https://github.com/MaryNCRT/Ultimate-Mortal-Kombat-3-iOS-Recomp),
+which takes the iOS binary apart. This one puts a game back together from what
+that one finds. [How they fit together](#the-two-repositories).
 
-With them, Godot can open the game's own stage files directly.
+---
 
-## What this is NOT
+## No copyrighted assets are distributed here
 
-It is not the game ported to Godot, and it is not a step toward that.
+**This repository ships no game files.** No textures, no models, no audio, no
+frame data — nothing you could extract from here and use. It runs against **a
+copy of the game you supply yourself**.
 
-The fight engine is 111,000 lines of C transcribed from the binary, and
-**it calls OpenGL directly in 366 places** — because the original did.
-Putting Godot underneath that would mean either writing a GL 1.1
-fixed-function shim on top of Godot's renderer, or editing the
-transcription so it no longer matches the disassembly. The second
-destroys the only property that makes the transcription worth anything.
+What lives here is code: GDScript that reads the game's own file formats, and a
+fight engine whose constants were recovered by reading the retail ARM binary.
+Numbers recovered from a binary — a table of hitboxes, a list of animation frame
+indices — are facts about how the software behaves, and they are written down
+here the way a format specification is written down. The game's files themselves
+stay on your disk, where `.gitignore` keeps them out of the repository.
 
-So what crosses over is the part with no fidelity constraint: **the
-knowledge of how the files are laid out.**
+You need a legally obtained copy of *Ultimate Mortal Kombat 3* for iOS
+(version 1.2.59) for any of this to do anything.
 
-## NO GAME DATA IS IN THE REPOSITORY
+---
 
-Nothing from the game is committed. `.gitignore` excludes `assets/`, and the
-repository is code only.
+## The two repositories
 
-**A working copy is a different thing.** `umk3/umk3_bundle.gd` copies the files
-this build actually uses -- 187 of them, followed from the stages' own
-references rather than copied wholesale -- into `res://assets/game/`, and the
-project then runs on its own with no install path between it and the data:
+They are separate projects with separate goals, and each is useful without the
+other. They share one thing: the binary, and what has been learned from it.
 
-    godot --headless --path . --script umk3/umk3_bundle.gd -- "X:/UMK3.app/res"
+| | [**Recomp**](https://github.com/MaryNCRT/Ultimate-Mortal-Kombat-3-iOS-Recomp) — step one | **Godot Remake** — step two (this one) |
+|---|---|---|
+| **Question it answers** | *What does the original do?* | *Can we play it again?* |
+| **Output** | Readable C, one function at a time, checked against a static ARM→C recompiler | A running game |
+| **Fidelity rule** | The C must match the disassembly | The *behaviour* must match the measurements |
+| **Renderer** | The original's own GL calls, transcribed | Godot's, written fresh |
+| **Scope** | The whole binary — 4,342 named functions | The fight first, and only Scorpion so far |
+| **Finished when** | The C compiles and plays | It plays like the phone game |
 
-Run it again with extra names to bring one more thing over as it is needed;
-it only copies what is missing. A build exported after that **carries EA's
-data inside it and is a personal build** -- do not pass it on. Delete
-`assets/game` and export again for one that asks for your own `res` folder
-instead, which is how it worked before.
+**Why two and not one.** The decompilation transcribes the original *including*
+the way it talks to the hardware — it calls OpenGL directly in 366 places,
+because the 2011 game did. Putting Godot underneath that would mean either
+writing a fixed-function GL shim on top of Godot's renderer, or editing the
+transcription until it no longer matches the disassembly. The second destroys
+the only property that makes a transcription worth having.
 
-## Running
+So the split runs along the one seam where nothing is lost:
 
-Set `res_dir` on the StageViewer node, or pass it on the command line:
+> **The decompilation owns the ANSWERS. The remake owns the ENGINE.**
 
-    godot --path . -- "X:\path\to\UMK3.app\res"
+Recomp reads `strike_check_regs` and works out that a strike box is
+`[X + x - w, X + x]` and not `[X + x, X + x + w]`. That fact is not C and it is
+not GL — it is just true. This repository takes facts like that and builds
+something you can play with them, on a renderer that runs on current hardware,
+in a window that resizes, with a gamepad that works.
 
-    [ and ]   previous / next stage
-    drag      orbit
-    wheel     zoom
-    SPACE     step the scene-graph frame
-    ESC       quit
+When a number here has a hex address beside it in a comment, that address is a
+citation into the binary Recomp documents. The two repositories are a reference
+and an implementation of the same subject.
 
-Headless check, which parses every stage and reports:
+---
 
-    godot --headless --path . --script umk3/umk3_check.gd -- "X:\...\res"
+## What works right now
 
-## Status
+Scorpion, one stage at a time, two players on one machine.
 
-    11 of 11 stages parse, 0 failures.
-    Geometry and placement  done
-    Textures                done — PVRTC 2bpp and 4bpp, and PNG
-    Lighting                the engine's model, standing in (see below)
+- **Movement** — walk, the run and its 48-unit turbo bar, jump, angled jump, duck, turn
+- **Attacks** — 16 strikes with their own hitboxes, damage, chip damage, reactions, sounds, animations and *per-move animation speeds*, including the six attacks that two buttons produce: a high kick becomes a knee inside 74 units, and a roundhouse with the stick held back
+- **Block** — standing and ducking, polled the way the engine polls it, and the rule that a low attack beats a standing block
+- **Specials** — the spear with its rope and its drag, the teleport punch with its screen wrap, and the air throw
+- **Reactions** — hits, knockdowns, the uppercut's launch and its landing, getting up, the round-losing collapse
+- **Presentation** — the game's own HUD sprites and round tokens, blood, screen shake, 44 sounds and the stage music
+- **Around the game** — a pause menu, per-player key config with mouse and pad support, video options (monitor, resolution, window mode, antialiasing, vertical sync, frame limit), all of it saved between runs
 
-### Textures
+[The full list, with what is measured and what is still chosen](docs/PROGRESS.md).
 
-Legacy **PVR v2** containers, PVRTC1 at 2 or 4 bits per pixel. Decoding is
-per-pixel and GDScript is slow at it, so each decode is cached as PNG in
-`user://umk3_texcache` — Graveyard's first run is about 9 seconds and every
-run after it is 3. The key carries the source file's size and modification
-time, so pointing at a different `res` folder invalidates it.
+## What does not
 
-221 of the game's textures are PNG rather than PVRTC and cost nothing;
-Godot reads them directly.
+One character of twenty-six. No AI opponent, no match flow, no fatalities, no
+front end beyond a stage picker, no online play. Seven of the eighteen arenas
+are not wired up yet.
 
-### Lighting — read this before trusting it
+---
 
-**The original does not light stages this way.** Stages have baked
-per-vertex light in `.lighting` files — 341 of them ship — and *that
-encoding is not decoded*. The bytes are 62% zeros with all 256 values
-present, which looks like delta coding or compression, and saying more
-would be guessing.
+## Running it
 
-What is here instead is `LightVert`, the engine's own model, ported
-exactly: two directional lights, **no ambient**, a `pow()` falloff on
-each, clamped to 1, and the result written as a monochrome grey
-multiplier that can never tint. It is applied to vertex normals that
-really are in the `.meshset` and that the iOS loader discards.
+```
+UMK3.exe -- "D:/games/UMK3.app/res"
+```
 
-So: the game's own light rig, on the game's own normals, but not what
-the game displays. `umk3_light.gd` says the same thing at the top.
+The path points at the `res` folder of your own extracted copy. It is remembered
+after the first run. [Longer version](docs/GETTING-STARTED.md).
 
-One number in there is not the engine's: `fill`. A verified zero ambient
-and one active light leaves pitch-black backs, which makes a viewer
-useless. It is labelled as a viewer affordance in both this project and
-the C one.
+---
 
-## Exporting for Blender
+## How the fidelity works
 
-    godot --headless --path . --script umk3/umk3_export.gd -- --char SCORPION_STANDARD
-    godot --headless --path . --script umk3/umk3_export.gd -- --stages
+Every constant in the fight is one of three things, and the code says which:
 
-writes `export/characters/*.glb` and `export/stages/*.glb`, scaled so a
-fighter is **1.8 m**, with one animation clip per entry of the engine's
-own animation table (82 for Scorpion). `export/` is gitignored: it is
-the same game data in another format.
+1. **Measured** — read out of the binary, with the address in the comment.
+   `const UPCUT_VY := -int(18.0 * ONE)   ## measured, 0xffee0000`
+2. **Chosen** — no measurement exists yet, and the comment says so plainly
+   rather than leaving you to guess which is which.
+3. **Generated** — a table emitted from the binary's own data, like the 27
+   strike records or the 82 animation streams. Those files say GENERATED at the
+   top and are not edited by hand.
 
-**Characters come out rigged.** A `.skin` does not store a bind pose —
-it stores each vertex already multiplied by its weight in each bone's
-own frame — and neither the skeleton's offsets nor any of the 344
-animation frames turn out to be one. So the bind pose is *recovered*:
-585 of Scorpion's 1,278 vertices are shared between two or more bones,
-and three shared points fix the rigid transform between two bone frames
-exactly, with no fitting. The sweep spreads from there across the
-skeleton, and a bone that shares nothing is unconstrained in a way that
-does not matter — all of its vertices have a single influence.
+The rule that produced most of the work here: **read the whole function, follow
+the chain to the leaf, and measure — never infer from plausibility.** Several of
+the things that looked obviously right turned out to be wrong, and the
+[methodology page](docs/METHODOLOGY.md) is partly a list of them, because the
+mistakes are more instructive than the successes.
 
-That claim is checked rather than asserted:
+---
 
-    godot --headless --path . --script umk3/umk3_checkglb.gd -- --frame 216
+## Prior work and acknowledgements
 
-loads the `.glb` back, drives its skeleton with a real animation frame,
-skins it by hand and compares every vertex against `umk3_skin.gd` — the
-function the fight has been drawing with all along. **0.5 mm on a 1.8 m
-figure.**
+- **[Ultimate-Mortal-Kombat-3-iOS-Recomp](https://github.com/MaryNCRT/Ultimate-Mortal-Kombat-3-iOS-Recomp)** — the other half of this project.
+- **[ermaccer](https://github.com/ermaccer)** — [UMK3IOS.MeshSetTool](https://github.com/ermaccer/UMK3IOS.MeshSetTool), the first public tool for this game's mesh format and the reference the parser here was checked against.
+- **[touchHLE](https://github.com/touchHLE/touchHLE)** — an emulator for iPhone OS applications, used as a behavioural reference.
+- **[Godot](https://godotengine.org/)**, **[Capstone](https://www.capstone-engine.org/)**, **[Ghidra](https://ghidra-sre.org/)**.
+- The controller glyphs are input-prompt packs kept locally and not redistributed here.
 
-### FBX
+---
 
-Godot has no FBX exporter; its FBX support is an importer. So the FBX is
-a conversion, and Blender does the writing:
+## Legal
 
-    godot ... umk3/umk3_export.gd -- --stages --blender "C:/.../blender.exe"
+*Ultimate Mortal Kombat 3* and all related assets are the property of their
+respective rights holders. This project is not affiliated with, endorsed by, or
+connected to Electronic Arts, Warner Bros. Interactive Entertainment,
+NetherRealm Studios, or Midway Games.
 
-which runs `export/glb_to_fbx.py` over everything it just wrote. That
-script is written out whether or not Blender is there, so the step can
-be run later by hand. Nothing is lost by stopping at `.glb`: Blender
-opens it with the armature, the weights and the clips intact.
+The work here is reverse engineering carried out for **interoperability and
+preservation**: making software that no longer runs on any current platform run
+again, on hardware its owners already have. No game code or data is
+redistributed. Everything operates on a copy the user already owns.
 
-### Blender files coming back
-
-`project.godot` turns on `filesystem/import/blender/enabled`, so a
-`.blend` dropped into the project imports like any other model — Godot
-runs Blender in the background and re-runs it whenever the file changes.
-The path to Blender is an **editor** setting, not a project one, because
-it is per machine:
-
-    Editor > Editor Settings > FileSystem > Import > Blender > Blender Path
-
-`.fbx` import is on too, and needs nothing external.
-
-## Where the path is remembered
-
-The first working `res` folder is saved to `user://umk3.cfg` and reused,
-so the editor's Play button and the Godot MCP server work without
-arguments. `user://` is outside the project — nothing about your install
-lands in the repository.
+This project's own code is released under the [MIT License](LICENSE).
