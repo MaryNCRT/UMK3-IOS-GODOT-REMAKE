@@ -479,9 +479,23 @@ const RATE_FALL := 5                     ## measured, part->0x28
 ##
 ## The -18.0 branch is a stage flag nobody sets by default. It is kept here
 ## because it is real, not because anything reaches it yet.
+## **`t_rup3` (0x00045ed4), the uppercut's launch, read whole.**
+##
+##     pl->0x1c = 0x20000     2.0, and `t_flight_call` hands it to away_x_vel
+##     pl->0x20 = 0xffee0000  -18.0, which becomes the part's vy
+##     pl->0x24 = 0x5800      0.34375, which becomes the part's gravity
+##     pl->0x28 = 5           the anirate the flight restores
+##     pl->0x40 = 0x1e        animation 30, SCKNOCKDOWN
+##     then it pushes `t_flight`, and on the way back `t_reaction_land`
+##
+## This port had -12.0 against a gravity of 0.375, which are both wrong and
+## wrong in the same direction: the arc was 64 frames instead of 104 and
+## barely more than half as high. An uppercut in this game throws you off the
+## top of the screen -- 18 squared over twice 0.34375 is 471 units, against a
+## fighter 130 tall -- and that is what it is supposed to look like.
 const UPCUT_VX := int(2.0 * ONE)         ## measured, 0x20000
-const UPCUT_VY := -int(12.0 * ONE)       ## measured, -786432
-const UPCUT_G := 24576                   ## measured, 0.375
+const UPCUT_VY := -int(18.0 * ONE)       ## measured, 0xffee0000
+const UPCUT_G := 0x5800                  ## measured, 0.34375
 
 ## **How fast each reaction throws the victim sideways**, from the leaf that
 ## arms its flight.
@@ -668,6 +682,59 @@ const RUN_VOICE := 7                     ## measured, group_sound's index
 const RUN_MAX := 0x30                    ## measured, 48
 const RUN_PENALTY := 0x28                ## measured, 40
 
+## **Every attack carries its own animation AND its own rate, and this port
+## had neither.** It played all of them off the move the button names, at the
+## stance's inherited 6.
+##
+## Each `t_stat_do_*` / `t_do_*` proc is the same four lines -- the pattern
+## `t_do_block_hi` and `run_setup` already showed -- an animation index into
+## `pl->0x40`, a rate into `pl->0x1c`, a tag into `pl->0x20`:
+##
+##     t_stat_do_hi_kick    0x0004e660   ani 17  rate 1   tag 0x103
+##     t_stat_do_lo_kick    0x0004e6cc   ani 18  rate 1   tag 0x104
+##     t_stat_do_sweep_kick 0x0004e8c4   ani 20  rate 3   tag 0x10d
+##     t_stat_do_roundhouse 0x0004eaa4   ani 21  rate from `_round_speeds`
+##     t_stat_do_uppercut   0x0004fab4   ani 11  rate 2   tag 0x10e
+##     t_stat_do_duck_punch 0x0004e814   ani  8  rate 3   tag 0x108
+##     t_stat_do_duck_kickh 0x0004e7a4   ani  9  rate 3   tag 0x106
+##     t_stat_do_duck_kickl 0x0004e734   ani 10  rate 2   tag 0x107
+##     t_do_knee            0x00032a88   ani 19  rate 1   tag 0x109
+##     t_do_elbow           0x00032b78   ani from `_ochar_elbow_animations`,
+##                                       rate 1, tag 0x10a
+##     t_do_jumpup_punch    0x0004d5c0   ani 24  rate 9
+##     t_do_jumpup_kick     0x0004d54c   ani 23  rate 10
+##     t_do_flip_punch      0x0004d3ec   ani 24  rate 12
+##     t_do_flip_kick       0x0004d634   ani 25  rate 11
+##
+## Two of those are per-character byte tables rather than constants, and both
+## agree with the rest for Scorpion (18): `_round_speeds` (0x001673b0) byte 18
+## is 3, and `_ochar_elbow_animations` (0x001664bc) byte 18 is 16 -- SCCOMBO,
+## which is what his elbow is the first frame of. The top bit of the elbow
+## entry is a "this character has no elbow" flag and Scorpion does not carry
+## it.
+##
+## The kicks at rate 1 are the visible half of this: a six-frame SCHIKICK at
+## the inherited 6 took thirty-six game frames, and the engine gives it six.
+##
+## **The punches are the exception and it is a finding, not a gap.**
+## `t_joy_un_hi_punch1` and `t_joy_un_lo_punch1` set the animation and go
+## straight to `find_ani_part2` without touching the rate at all, so a jab runs
+## at whatever the fighter was already carrying. -1 is that inheritance.
+const STRIKE_ANI := {
+	_Stk.HIKICK: 17, _Stk.LOKICK: 18, _Stk.HI_PUNCH: 14, _Stk.LO_PUNCH: 15,
+	_Stk.SWEEP: 20, _Stk.DUCK_PUNCH: 8, _Stk.DUCK_KICKH: 9,
+	_Stk.DUCK_KICKL: 10, _Stk.UPPERCUT: 11, _Stk.JUMP_PUNCH: 24,
+	_Stk.JUMP_KICK: 23, _Stk.FLIP_KICK: 25, _Stk.FLIP_PUNCH: 24,
+	_Stk.ROUNDH: 21, _Stk.KNEE: 19, _Stk.ELBOW: 16,
+}
+const STRIKE_RATE := {
+	_Stk.HIKICK: 1, _Stk.LOKICK: 1, _Stk.HI_PUNCH: -1, _Stk.LO_PUNCH: -1,
+	_Stk.SWEEP: 3, _Stk.DUCK_PUNCH: 3, _Stk.DUCK_KICKH: 3,
+	_Stk.DUCK_KICKL: 2, _Stk.UPPERCUT: 2, _Stk.JUMP_PUNCH: 9,
+	_Stk.JUMP_KICK: 10, _Stk.FLIP_KICK: 11, _Stk.FLIP_PUNCH: 12,
+	_Stk.ROUNDH: 3, _Stk.KNEE: 1, _Stk.ELBOW: 1,
+}
+
 const RATE_STANCE := 6
 const RATE_RUN := 3
 
@@ -778,6 +845,13 @@ class Fight extends RefCounted:
 	var prev_buttons := 0
 	## Which of those bits went down this frame -- `swscan`'s press set.
 	var went := 0
+	## **Which strike this attack resolved to, decided once.** The engine's
+	## joy proc picks the knee, the elbow, the roundhouse or the sweep at the
+	## moment the button goes down and jumps to THAT proc, which then sets the
+	## animation and the rate. Recomputing it every frame -- which is what
+	## this did -- let a fighter walk out of knee range mid-swing and change
+	## which attack he was throwing.
+	var strike := -1
 	## Was the stick held AWAY from the opponent when the button went down?
 	## `is_stick_away` (0x00055df0) is what turns a high kick into a
 	## roundhouse and a low kick into a sweep.
@@ -848,6 +922,10 @@ class Fight extends RefCounted:
 	var collapsed := false
 	## This fall ends the round: he does not get up again.
 	var dying := false
+	## This fall had a real launch, so LANDING is what ends it. A flat
+	## knockdown never leaves the floor and cannot be timed that way -- which
+	## is the bug that used to freeze a victim two ticks into his fall.
+	var airborne_launch := false
 
 	## init_anirate: the rate is loaded and the countdown starts at ONE, so the
 	## first advance lands on the very next frame rather than `rate` frames
@@ -1043,6 +1121,8 @@ func reset() -> void:
 		f.blk_shake = 0
 		f.no_block = false
 		f.went = 0
+		f.strike = -1
+		f.airborne_launch = false
 		f.turbo = RUN_MAX
 		f.turbo_pen = 0
 		f.sp_live = false
@@ -1127,12 +1207,20 @@ func _pressed_button(f: Fight, _raw: int) -> int:
 
 
 # ----------------------------------------------------------- the state machine
-func _move_frames(mv: int) -> int:
-	if mv <= MV_NONE or mv >= MOVE_ANI.size():
+## How long an attack lasts: its own clip at its own rate.
+func _move_frames(sid: int) -> int:
+	if sid < 0:
 		return RATE_STANCE
-	# A move lasts its animation at whatever rate the fighter is carrying, which
-	# is the inheritance the engine relies on.
-	return _ani_length(MOVE_ANI[mv], maxi(1, RATE_STANCE + rate_bias))
+	return _ani_length(int(STRIKE_ANI.get(sid, 0)), _strike_rate(sid))
+
+
+## The rate an attack plays at. -1 in the table means the engine never set one
+## and the fighter keeps what he had, which for a jab is the stance's.
+func _strike_rate(sid: int) -> int:
+	var r: int = int(STRIKE_RATE.get(sid, -1))
+	if r < 0:
+		r = RATE_STANCE
+	return maxi(1, r + rate_bias)
 
 
 ## Which strike id this fighter's current move actually produces.
@@ -1146,11 +1234,11 @@ func _move_frames(mv: int) -> int:
 ##
 ## `dist` is centre to centre, which is exactly what `get_x_dist` (0x0002f3a0)
 ## returns: |other.x - my.x|, no boxes involved.
-func _strike_id(f: Fight, dist: int, away: bool) -> int:
-	if not MOVE_STRIKE.has(f.move):
+func _resolve_strike(f: Fight, mv: int, dist: int, away: bool) -> int:
+	if not MOVE_STRIKE.has(mv):
 		return -1
-	var id: int = MOVE_STRIKE[f.move]
-	match f.move:
+	var id: int = MOVE_STRIKE[mv]
+	match mv:
 		MV_HI_KICK:
 			if away:
 				return _Stk.ROUNDH
@@ -1176,7 +1264,7 @@ func _strike_of(f: Fight, other: Fight = null) -> Array:
 ## The same question, answered as the strike ID. The block half of a record --
 ## the chip damage and which of the 24 `_block_xfers` procs the victim goes
 ## into -- is looked up by id, so the id has to survive the lookup.
-func _strike_now(f: Fight, other: Fight = null) -> int:
+func _strike_now(f: Fight, _other: Fight = null) -> int:
 	if f.st == St.SPECIAL:
 		# **The spear is not here.** `_stk_scorp_spear` belongs to the
 		# projectile, which is its own object with its own box -- see
@@ -1186,12 +1274,8 @@ func _strike_now(f: Fight, other: Fight = null) -> int:
 		return -1
 	if f.st != St.ATTACK:
 		return -1
-	var dist := 0
-	var away := false
-	if other != null:
-		dist = absi(other.xi() - f.xi())
-		away = f.stick_away
-	return _strike_id(f, dist, away)
+	# Decided at the press, in `_start_attack`, and not touched since.
+	return f.strike
 
 
 ## Where a strike's box sits in the world, as [x0, y0, x1, y1] in engine units
@@ -1224,7 +1308,8 @@ static func _overlap(a: Array, b: Array) -> bool:
 func _start_attack(f: Fight, mv: int, dist: int) -> void:
 	f.st = St.ATTACK
 	f.move = mv
-	f.timer = _move_frames(mv)
+	f.strike = _resolve_strike(f, mv, dist, f.stick_away)
+	f.timer = _move_frames(f.strike)
 	f.timer_total = f.timer
 	f.connected = false
 	if audio:
@@ -1250,7 +1335,7 @@ func _start_attack(f: Fight, mv: int, dist: int) -> void:
 		# play NOTHING of their own -- they are reached from a move that has
 		# already made its noise -- so those inherit here, which is a reading
 		# of the call graph rather than a measurement of its own.
-		var id := _strike_id(f, dist, f.stick_away)
+		var id := f.strike
 		var heavy := id == _Stk.UPPERCUT or id == _Stk.HIKICK 			or id == _Stk.ROUNDH or id == _Stk.SWEEP or id == _Stk.LOKICK
 		audio.swing(heavy, id != _Stk.UPPERCUT)
 
@@ -1351,7 +1436,13 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			# gravity had made vy positive but the half-unit of fall had not
 			# yet been clamped away. Two ticks of a thirty-tick clip, and
 			# whatever frame that left him on is where he stopped.
-			if f.timer == 0:
+			# **`t_flight` ends when he lands.** A launched fighter is timed
+			# by the floor, not by a counter; the counter is the backstop.
+			var landed := false
+			if f.airborne_launch and f.vy > 0 and f.yi() >= _ground_y():
+				landed = true
+			if f.timer == 0 or landed:
+				f.airborne_launch = false
 				f.vy = 0
 				f.g = 0
 				f.y = _ground_y() * ONE
@@ -1843,8 +1934,12 @@ func _launch(f: Fight, away: int) -> void:
 		f.vy = UPCUT_VY
 		f.g = UPCUT_G
 		# It stays up far longer than the clip runs, so the fall is timed by
-		# the ARC -- `2 * vy / g` frames -- and the clip holds its end.
-		f.timer = int(2.0 * 12.0 / 0.375)
+		# the ARC -- `2 * vy / g` frames -- and the clip holds its end. The
+		# state also ends the moment he touches the floor, which is the real
+		# `t_flight` exit; the timer is only there so a fighter launched into
+		# a ceiling cannot hang.
+		f.timer = (2 * -UPCUT_VY) / maxi(UPCUT_G, 1) + 4
+		f.airborne_launch = true
 	else:
 		f.vy = 0
 		f.g = FALL_G
@@ -2244,6 +2339,8 @@ func _ani_for(f: Fight) -> Array:
 			# it was doing.
 			return [ANI_SPEAR, RATE_PULL]
 		St.ATTACK:
+			if f.strike >= 0 and STRIKE_ANI.has(f.strike):
+				return [int(STRIKE_ANI[f.strike]), _strike_rate(f.strike)]
 			return [MOVE_ANI[f.move], -1]
 		St.HIT:
 			if f.react >= 0 and REACT_ANI.has(f.react) 					and f.table != BT_DUCK:
@@ -2609,8 +2706,7 @@ func _wire_box(x0: float, y0: float, x1: float, y1: float,
 func _attack_name(f: Fight, which: int) -> String:
 	if f.st != St.ATTACK:
 		return ""
-	var other: Fight = fighters[1 - which]
-	var id := _strike_id(f, absi(other.xi() - f.xi()), f.stick_away)
+	var id := f.strike
 	return _Stk.NAME[id] if id >= 0 else MOVE_NAME[f.move]
 
 
