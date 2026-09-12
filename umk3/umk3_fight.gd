@@ -1122,24 +1122,27 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.table = BT_STANCE
 			return
 		St.FALLING:
-			# **It ends when he lands, not when the clip runs out.** The tumble
-			# is drawn in the air and SCFALLTHUD is the landing, so the switch
-			# between them is the floor.
-			# `vy > 0` is "past the apex": on the frame the launch happens he
-			# is still standing on the floor, and testing the height alone
-			# landed him again before he had left.
-			if not airborne and f.vy > 0:
+			# **It ends when the CLIP does**, and that is the fix for a
+			# fighter who froze mid-air.
+			#
+			# `t_fall_on_my_back` arms gravity with the velocity at zero, so
+			# there is no arc to land from: he is on the floor the whole time
+			# and the clip does the tumbling. The old test -- "not airborne
+			# and vy past the apex" -- went true on the second tick, when
+			# gravity had made vy positive but the half-unit of fall had not
+			# yet been clamped away. Two ticks of a thirty-tick clip, and
+			# whatever frame that left him on is where he stopped.
+			if f.timer == 0:
 				f.vy = 0
 				f.g = 0
 				f.y = _ground_y() * ONE
+				f.vx = 0
 				if f.dying:
 					_hit_the_floor(f)
 					return
 				f.st = St.DOWN
-				f.timer = _ani_length(ANI_FALLTHUD,
-					maxi(1, RATE_STANCE + rate_bias)) + DOWN_HOLD
+				f.timer = RATE_FALL + DOWN_HOLD
 				f.timer_total = f.timer
-				f.vx = 0
 				if audio:
 					audio.fall()
 			return
@@ -1937,19 +1940,26 @@ func _pose(f: Fight) -> void:
 	# way, which is the pose that looked wrong.
 	#
 	# So: the leap frames while he flies, the punch frame once he is back.
-	# **The flat pose is the DEFEAT, not every knockdown.**
+	# **Both ends of the settle, and they are different poses.**
 	#
-	# `t_collapse_on_ground` is the only thing in the fight that forces a held
-	# final frame -- `find_ani_part2`, `find_last_frame`, then the dead adjust
-	# and the shake. An ordinary knockdown has no such call: it plays its clip
-	# and goes to the getup. So a fighter who is going to stand up again ends
-	# on the clip's own last frame, and only a fighter who has lost the round
-	# settles all the way down through FALL_TAIL to the flat one.
-	if f.st == St.DEAD:
+	# The clip stops at a frame that is still off the floor, and the frame list
+	# carries two more. Their measurements say what each is for:
+	#
+	#     125 SCKNOCKDOWN7  +0.02 h, 0.41 h tall -- on the ground, propped up
+	#     126 SCKNOCKDOWN8  -0.06 h, 0.21 h tall -- flat
+	#
+	# and SCGETUP1, the frame the getup starts from, is 0.40 h tall at -0.03 h
+	# -- the same posture as 125. So a man who is going to stand up rests on
+	# 125 and the getup carries on from exactly there, while a man who has lost
+	# the round goes on to 126. `t_collapse_on_ground` is the only thing in the
+	# fight that forces a held final frame, which is what makes the second one
+	# the DEFEAT rather than every knockdown.
+	if f.st == St.DOWN or f.st == St.DEAD:
 		var tail: Array = FALL_TAIL.get(f.ani, [])
 		if not tail.is_empty():
+			var last: int = tail.size() - 1 if f.st == St.DEAD else 0
 			var gone := f.timer_total - f.timer
-			var at: int = 0 if gone < RATE_FALL else tail.size() - 1
+			var at: int = 0 if gone < RATE_FALL else last
 			f.node.set_pose(int(tail[at]), int(tail[at]), 0.0)
 			return
 
