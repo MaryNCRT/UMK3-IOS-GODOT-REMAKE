@@ -483,8 +483,28 @@ const UPCUT_VY := -int(12.0 * ONE)       ## measured, -786432
 const UPCUT_G := 24576                   ## measured, 0.375
 
 ## **How fast each reaction throws the victim sideways**, from the leaf that
-## arms its flight. `t_flight_call` passes it through `away_x_vel`, so it is
-## always away from whoever landed the hit.
+## arms its flight.
+##
+## The uppercut's is `obj->0x1c = 0x20000` in `t_rup3`, read instruction by
+## instruction: it is set after `create_fx` and nothing writes it again before
+## `t_flight_call` picks it up. **2.0 against a vy of 12.0 is an initial angle
+## of nine and a half degrees off vertical** -- so the victim does go up in a
+## slight diagonal, and that is the data rather than a bug. Over the
+## sixty-four frames of the arc it carries him about 128 units sideways.
+##
+## ## And it does NOT go straight into the part
+##
+## `away_x_vel` (0x00055ab0) negates the value when the opponent is to the
+## right and calls `set_x_vel_player` (0x00055a68), which writes it into
+## **`G[0xb8]` or `G[0x210]`** -- the two walk-velocity words `repell_func`
+## arbitrates -- not into the part's own 0x18. `repell_func` then copies them
+## into the part every frame on its way out.
+##
+## So a launched victim's drift is subject to the leash and the push-apart like
+## any other movement, and it persists until something else writes those words.
+## **This port's `_repell` skips entirely while either fighter is airborne**,
+## so a victim in the air is not arbitrated the way the engine's is -- the
+## simplification is in `_repell`'s own note and this is the other end of it.
 ##
 ## Every one of these leaves also takes rate 5 and animation 30, which is why
 ## RATE_FALL and SCKNOCKDOWN are shared:
