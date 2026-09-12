@@ -448,6 +448,61 @@ const RATE_GETUP := 4
 const FALL_G := 0x8000                   ## measured, 0.5 in 16.16
 const RATE_FALL := 5                     ## measured, part->0x28
 
+## **The uppercut's launch, from `t_rup3` (0x00045ed4).**
+##
+## The chain took five functions to walk and this is the leaf of it:
+##
+##     t_r_uppercut -> t_reaction_start -> t_rst5 -> t_cc_ken_masters
+##     -> t_avoid_corner_trap -> (state 0x748) -> t_pit_abort -> t_rup3
+##
+## and `t_rup3` sets, in order:
+##
+##     obj->0x1c = 0xe ; create_fx          an effect, id 14
+##     obj->0x1c = 0x20000                  2.0, through away_x_vel
+##     if RoundParam[2] != 0                a different stage floor -> elsewhere
+##     if (int8)RoundParam[0x30] != 0
+##          obj->0x20 = -1179648            -18.0     vy
+##          obj->0x24 = 0x5800                0.34375 gravity
+##     else                                 <- THE DEFAULT
+##          obj->0x20 = -786432             -12.0     vy
+##          obj->0x24 = that + 0xc6000        0.375   gravity
+##     obj->0x28 = 5                          the anirate
+##     obj->0x40 = 5 + 0x19 = 30              SCKNOCKDOWN
+##     -> t_flight -> t_flight_call
+##
+## `mk3_init_game` writes `RoundParam[0x30] = 0` and `RoundParam[2] = 0`, so
+## **the default is -12.0 against 0.375**: a peak of 192 units, one and a third
+## body heights, and sixty-four frames in the air. Against the jump's own -10.0
+## and 0.5 -- a hundred units -- an uppercut throws you nearly twice as high
+## and keeps you up twice as long, which is what an uppercut is for.
+##
+## The -18.0 branch is a stage flag nobody sets by default. It is kept here
+## because it is real, not because anything reaches it yet.
+const UPCUT_VX := int(2.0 * ONE)         ## measured, 0x20000
+const UPCUT_VY := -int(12.0 * ONE)       ## measured, -786432
+const UPCUT_G := 24576                   ## measured, 0.375
+
+## **How fast each reaction throws the victim sideways**, from the leaf that
+## arms its flight. `t_flight_call` passes it through `away_x_vel`, so it is
+## always away from whoever landed the hit.
+##
+## Every one of these leaves also takes rate 5 and animation 30, which is why
+## RATE_FALL and SCKNOCKDOWN are shared:
+##
+##     t_fall_on_my_back      0.0     the plain backward fall
+##     t_r_airpunch           3.0
+##     t_airborn_hit_no_sound 3.5
+##     t_r_post_shake         4.0     t_r_kano_roll, t_r_ind_charge the same
+##     t_combo_airborn_hit    5.0     t_r_square the same
+##     t_r_jade_prop          6.0
+##
+## Only the ones a Scorpion fight can reach are listed below; the rest are
+## recorded here so the next character does not have to find them again.
+const FALL_VX := {
+	8: UPCUT_VX,     # t_r_uppercut -> t_rup3
+	11: int(3.0 * ONE),                  # t_r_flip_punch, the airpunch family
+}
+
 ## **Where the body comes to rest, and the one place this leaves the streams.**
 ##
 ## The stream for animation 30 is six frames and ends at SCKNOCKDOWN6;
@@ -1431,7 +1486,7 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	# him and stops him dead before the reaction's own velocity is applied.
 	b.facing = 1 if a.xi() >= b.xi() else -1
 	b.vx = 0
-	_take_reaction(b, int(stk[_Stk.REACT]))
+	_take_reaction(b, int(stk[_Stk.REACT]), away)
 	b.table = BT_NULL                        # how the engine takes input away
 	# **The reaction's own velocity, out of the reaction it names.** The strike
 	# record's fifth word carries the index into `_reaction_table`, and the
@@ -1439,7 +1494,12 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	# call it at all. See umk3_strikes.gd's REACT_VX: a jab pushes nobody, a
 	# high kick pushes 4.5 a frame. What was here was one invented number
 	# doubled above 24 damage.
-	b.vx = int(_react_vx(stk) * ONE) * away
+	# **A knockdown's own leaf has already set the velocity** -- `t_rup3` gives
+	# the uppercut 2.0 through `away_x_vel` -- and REACT_VX comes from the
+	# `t_r_*` proc one level up, which for those reactions never calls it. The
+	# more specific one wins; overwriting it here zeroed the uppercut's drift.
+	if not KNOCKS_DOWN.has(int(stk[_Stk.REACT])):
+		b.vx = int(_react_vx(stk) * ONE) * away
 	if b.health <= 0:
 		# **The round-ending hit always puts him on the floor.** Whatever the
 		# reaction was, the loser collapses.
@@ -1480,13 +1540,13 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 ## **Which animation** is REACT_ANI, and **whether it is a knockdown** is
 ## KNOCKS_DOWN -- both by the reaction id out of the strike record, the same
 ## number that already chooses the knockback and the sound.
-func _take_reaction(f: Fight, react: int) -> void:
+func _take_reaction(f: Fight, react: int, away := 1) -> void:
 	f.react = react
 	var ani: int = int(REACT_ANI.get(react, ANI_HIT))
 	if f.table == BT_DUCK and not KNOCKS_DOWN.has(react):
 		ani = ANI_DUCK_HIT
 	if KNOCKS_DOWN.has(react):
-		_launch(f)
+		_launch(f, away)
 		return
 	f.st = St.HIT
 	f.timer = _ani_length(ani, maxi(1, RATE_STANCE + rate_bias))
@@ -1495,15 +1555,25 @@ func _take_reaction(f: Fight, react: int) -> void:
 
 ## Off the feet -- `t_fall_on_my_back`, transcribed. No launch: gravity armed,
 ## velocity zero, the clip at rate five doing the work.
-func _launch(f: Fight) -> void:
+func _launch(f: Fight, away: int) -> void:
 	var clip: int = ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN
 	f.st = St.FALLING
 	f.table = BT_NULL
-	f.vx = 0
-	f.vy = 0
-	f.g = FALL_G
 	f.ani_rate = RATE_FALL
-	f.timer = _ani_length(clip, RATE_FALL)
+	f.vx = int(FALL_VX.get(f.react, 0)) * away
+	if f.react == _Stk.UPPERCUT and not f.dying:
+		# The one reaction with a launch of its own -- and not for the
+		# round-ending collapse, which `t_collapse_on_ground` drives with no
+		# velocity at all. See UPCUT_VY.
+		f.vy = UPCUT_VY
+		f.g = UPCUT_G
+		# It stays up far longer than the clip runs, so the fall is timed by
+		# the ARC -- `2 * vy / g` frames -- and the clip holds its end.
+		f.timer = int(2.0 * 12.0 / 0.375)
+	else:
+		f.vy = 0
+		f.g = FALL_G
+		f.timer = _ani_length(clip, RATE_FALL)
 	f.timer_total = f.timer
 
 
@@ -1519,7 +1589,7 @@ func _collapse(f: Fight) -> void:
 	f.react = _Stk.UPPERCUT                  # SCKNOCKDOWN, what 0x1e resolves to
 	f.dying = true
 	f.noedge = true                          # set_noedge
-	_launch(f)
+	_launch(f, 0)
 
 
 ## State 0x30f: the body is on the LAST frame of the knockdown, shifted back by
