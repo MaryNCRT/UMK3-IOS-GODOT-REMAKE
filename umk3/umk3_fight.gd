@@ -862,6 +862,10 @@ var cam_mid := 0
 var cam_span := float(CAM_WIDTH)
 var hud = null
 var blood = null
+## The bindings. See umk3_input.gd -- set by umk3_main.gd, and the fight reads
+## nothing at all without it, which is deliberate: there is no second place
+## where a key becomes a bit.
+var input = null
 
 var _accum := 0.0
 var _cam: Camera3D = null
@@ -974,6 +978,12 @@ func reset() -> void:
 
 
 # --------------------------------------------------------------------- input
+## One player's ten-bit word.
+##
+## **The bindings live in umk3_input.gd now**, one set per player for the
+## keyboard and one for the pad, both live at once. What does not move is the
+## word this returns: ten bits in the engine's order, which is the whole of
+## what the fight downstream of here has ever received.
 func _read_player(which: int) -> int:
 	if which == 0 and not forced_seq.is_empty():
 		var v: int = forced_seq[mini(_seq_at, forced_seq.size() - 1)]
@@ -981,46 +991,9 @@ func _read_player(which: int) -> int:
 		return v
 	if forced[which] >= 0:
 		return forced[which]
-	var bits := 0
-	var map: Array = KEYS[which]
-	for i in 10:
-		if Input.is_key_pressed(map[i]):
-			bits |= 1 << i
-	if which == 0:
-		bits |= _read_pad()
-	return bits
-
-
-## A gamepad, as the same ten bits. The engine never sees a device: **it takes
-## one ten-bit word per player and nothing else.**
-func _read_pad() -> int:
-	if Input.get_connected_joypads().is_empty():
+	if input == null:
 		return 0
-	var d := 0
-	var pad: int = Input.get_connected_joypads()[0]
-	var ax := Input.get_joy_axis(pad, JOY_AXIS_LEFT_X)
-	var ay := Input.get_joy_axis(pad, JOY_AXIS_LEFT_Y)
-	if ay < -0.5 or Input.is_joy_button_pressed(pad, JOY_BUTTON_DPAD_UP):
-		d |= IN_UP
-	if ay > 0.5 or Input.is_joy_button_pressed(pad, JOY_BUTTON_DPAD_DOWN):
-		d |= IN_DOWN
-	if ax < -0.5 or Input.is_joy_button_pressed(pad, JOY_BUTTON_DPAD_LEFT):
-		d |= IN_LEFT
-	if ax > 0.5 or Input.is_joy_button_pressed(pad, JOY_BUTTON_DPAD_RIGHT):
-		d |= IN_RIGHT
-	if Input.is_joy_button_pressed(pad, JOY_BUTTON_Y):
-		d |= IN_HP
-	if Input.is_joy_button_pressed(pad, JOY_BUTTON_X):
-		d |= IN_LP
-	if Input.is_joy_button_pressed(pad, JOY_BUTTON_RIGHT_SHOULDER):
-		d |= IN_BL
-	if Input.is_joy_button_pressed(pad, JOY_BUTTON_B):
-		d |= IN_HK
-	if Input.is_joy_button_pressed(pad, JOY_BUTTON_A):
-		d |= IN_LK
-	if Input.is_joy_button_pressed(pad, JOY_BUTTON_LEFT_SHOULDER):
-		d |= IN_RUN
-	return d
+	return input.read(which)
 
 
 ## Which of the six buttons went down THIS frame, or -1.
@@ -1786,16 +1759,30 @@ func _step_spear(f: Fight, other: Fight) -> void:
 ## walking INTO the other has his speed halved, and if both are closing they
 ## both stop.
 ##
-## **What is simplified:** the original gates all of this on a vertical overlap
-## test using two per-fighter fields (`Pp + 0x40`, and the parts' 0x38 and
-## 0x40) that this port does not model, and on a countdown at `G + 0x456` whose
-## writer has not been found. Here the gate is "both on the ground", which is
-## the case those fields describe in an ordinary fight.
+## **The vertical gate, now transcribed rather than skipped.** The original
+## decides between the three behaviours with the fighters' own box edges --
+## `part + 0x38` is the top and `part + 0x40` the bottom:
+##
+##     (pl0.bottom - 0x30) + y1  <  pl1.top + y2        p0 well ABOVE p1
+##     y1 + pl0.top  <=  (pl1.bottom - 0x30) + y2       they OVERLAP
+##     otherwise                                        p0 well BELOW p1
+##
+## With this port's box -- top 6, bottom 136 -- both of those collapse to the
+## same number: the pair interact when their y's are within **82** units of
+## each other, and only the leash applies when they are not. So a fighter
+## launched by an uppercut stops being pushed once he is more than 82 units up,
+## and is still reeled in by the leash the whole way, which is what the engine
+## does and what "both on the ground" -- the gate this replaces -- did not.
+##
+## Still simplified: `Pp + 0x40` is a per-fighter height threshold with no
+## writer anyone has found, and the countdown at `G + 0x456` likewise. Those
+## choose between "setup" and "apart" in the two non-overlapping cases; here
+## the non-overlapping cases always take the leash-only path.
+const REPELL_OVERLAP := 82               ## (BOX_TOP + BOX_H - 0x30) - BOX_TOP
 func _repell() -> void:
 	var a := fighters[0]
 	var b := fighters[1]
-	if a.yi() < _ground_y() or b.yi() < _ground_y():
-		return
+	var overlap := absi(a.yi() - b.yi()) <= REPELL_OVERLAP
 
 	var x1 := a.xi()
 	var x2 := b.xi()
@@ -1803,7 +1790,7 @@ func _repell() -> void:
 	var vx1 := a.vx
 	var vx2 := b.vx
 
-	if adx <= NEAR_GAP:
+	if overlap and adx <= NEAR_GAP:
 		# apart:
 		if x1 >= x2:
 			vx1 = PUSH_VEL
@@ -1811,7 +1798,7 @@ func _repell() -> void:
 		else:
 			vx1 = -PUSH_VEL
 			vx2 = PUSH_VEL
-	elif adx <= 0x3f:
+	elif overlap and adx <= 0x3f:
 		# arbitrate_1 / arbitrate_2, in that order: whichever fighter is moving
 		# toward the other drags both, and two closing fighters stop.
 		if vx1 != 0 and ((vx1 < 0 and x1 > x2) or (vx1 > 0 and x1 < x2)):

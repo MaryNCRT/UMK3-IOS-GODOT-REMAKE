@@ -13,6 +13,8 @@ const _Audio := preload("res://umk3/umk3_audio.gd")
 const _Effects := preload("res://umk3/umk3_effects.gd")
 const _InputHud := preload("res://umk3/umk3_inputhud.gd")
 const _Bars := preload("res://umk3/umk3_hud.gd")
+const _Pause := preload("res://umk3/umk3_pause.gd")
+const _InputCfg := preload("res://umk3/umk3_input.gd")
 
 ## A stamp on screen, because "the fix is in" and "the fix is in the copy you
 ## are running" are different claims and only the second one matters. Bump it
@@ -31,6 +33,13 @@ var _cam: Camera3D
 var _hud: Label
 var _keys: Control
 var _bars: Control
+var _pause: Control
+## `--menu 1` opens the pause menu on the first frame, which is how it is
+## photographed without a hand on the keyboard.
+var _open_menu := 0
+## The bindings, shared by the fight, the panel and the pause menu --
+## **one object, so a rebind cannot reach one of them and miss another.**
+var _input = null
 var _world: Node3D
 
 ## Two ways to look at the same stage: the fight, and the free camera that was
@@ -119,6 +128,7 @@ func _ready() -> void:
 			"--fog":    _Effects.opacity = float(args[i + 1])
 			"--hitbox": _hitbox = int(args[i + 1]) != 0
 			"--gap":    _gap = int(args[i + 1])
+			"--menu":   _open_menu = int(args[i + 1])
 			"--shot":
 				_shot = args[i + 1]
 				set_process(true)
@@ -144,6 +154,19 @@ func _ready() -> void:
 ## GetWindowRect, SetForegroundWindow failed, and it captured the user's
 ## private windows instead. Never again: the program photographs itself.
 func _process(_dt: float) -> void:
+	# **Pads are re-checked every frame**, so one can be picked up mid-round
+	# and the panel and the menu follow it without being told.
+	if _input:
+		_input.detect()
+	if _open_menu > 0 and _pause and _in_stage:
+		if _open_menu > 1:
+			_pause.page = 1               # straight to the controls page
+		_open_menu = 0
+		_pause.open() if _pause.page == 0 else _pause.set("visible", true)
+	if _pause and _pause.visible:
+		get_tree().paused = true
+	elif get_tree().paused:
+		get_tree().paused = false
 	if _in_stage and _hud and _fight_mode and _fight != null:
 		_hud.text = _hud_text()
 		if _keys:
@@ -209,6 +232,21 @@ func _enter_stage(stem: String) -> void:
 		# Under the input panel in the tree so the panel stays readable.
 		_bars = _Bars.new()
 		add_child(_bars)
+		# The pause menu, on top of everything, and the bindings it edits.
+		_input = _InputCfg.new()
+		_keys.input = _input
+		_pause = _Pause.new()
+		_pause.input = _input
+		_pause.visible = false
+		# **The menu and this node keep running while the tree is paused**,
+		# or the thing that unpauses would itself be asleep.
+		_pause.process_mode = Node.PROCESS_MODE_ALWAYS
+		process_mode = Node.PROCESS_MODE_ALWAYS
+		_pause.reset_round.connect(func() -> void:
+			if _fight:
+				_fight.reset())
+		_pause.quit_match.connect(_leave_stage)
+		add_child(_pause)
 	_cam.current = true
 	_hud.visible = true
 	_load_stage()
@@ -230,6 +268,7 @@ func _ensure_fight() -> void:
 		add_child(_audio)
 	_fight = _Fight.new()
 	_fight.audio = _audio
+	_fight.input = _input
 	if _bars:
 		_bars.setup(_menu.textures)
 		_fight.hud = _bars
@@ -357,6 +396,14 @@ func _unhandled_input(e: InputEvent) -> void:
 		elif e.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_dist = minf(_dist * 1.1, 200000.0); _update_cam()
 	elif e is InputEventKey and e.pressed and not e.echo:
+		# **Escape opens the pause menu now** rather than dropping the stage;
+		# quitting to the menu is an item inside it.
+		if e.keycode == KEY_ESCAPE and _pause and _fight_mode:
+			if _pause.visible:
+				_pause.close()
+			else:
+				_pause.open()
+			return
 		match e.keycode:
 			KEY_ESCAPE:       _leave_stage()
 			KEY_V:
