@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://8e1kiag350yf"]
 
-[ext_resource type="Script" path="res://umk3/umk3_main.gd" id="1"]
+[ext_resource type="Script" uid="uid://b5snvoodh3cuh" path="res://umk3/umk3_main.gd" id="1"]
 
-[node name="UMK3" type="Node"]
+[node name="UMK3" type="Node" unique_id=76964706]
 script = ExtResource("1")

@@ -152,7 +152,25 @@ const ONE := 1 << FX
 ## (0xd in either field means "leave this one alone" -- a sentinel, not a value.)
 const JUMP_VY := int(-10.0 * ONE)       ## measured, 0x000581d0
 const GRAVITY := int(0.5 * ONE)         ## measured, field20 + 0xa8000
-const JUMP_VX := int(6.0 * ONE)         ## an angled jump's horizontal speed
+
+## **The angled jump is measured now too, and it was not 6.0.**
+##
+## `t_do_flip` (0x00030634) does not carry its own horizontal speed: it reads
+## whatever the caller left in `obj->field48`, and `plyrthread` is the caller.
+## Its two flip entries are the diagonals, selected by a bit PAIR rather than
+## by a direction:
+##
+##     bits & 9 == 9   up+right   0x000314d0  mov.w r3, #0x40000    +4.0
+##     bits & 5 == 5   up+left    0x0003126c  ldr   -> 0xfffc0000   -4.0
+##
+## Same magnitude both ways, so a forward jump and a back jump cover exactly
+## the same ground. `t_do_flip` then negates it through `is_he_right`, which
+## is what turns the two screen directions into toward/away.
+##
+## (The port had 6.0 here, which was never read off anything. The decompilation
+## briefly had the second literal as -8.0, which was a transcription slip --
+## the pc-relative load lands at 0x000317d0 and the word there is 0xfffc0000.)
+const JUMP_VX := int(4.0 * ONE)         ## measured, field48 at both flip entries
 
 ## **How long a move lasts is its animation's length**, and now that is the
 ## engine's own stream rather than a range read off the frame list.
@@ -643,11 +661,11 @@ const LAND_WAIT := 3
 ## the ducking pose -- they return to a crouch rather than to standing, which
 ## is exactly right and is not something anybody would have guessed.
 const ANI_TAIL := {
-	8: [37, 36, 22], 9: [28, 27, 26, 22], 10: [34, 34, 22],
-	11: [274], 14: [83, 84, 85], 15: [139, 140, 141], 16: [9, 8],
-	17: [78, 77, 76, 75, 74], 18: [134, 133, 132, 131, 130],
-	19: [109, 108], 20: [257, 258, 259], 21: [213, 214, 215],
-	23: [106, 105], 24: [63, 62], 25: [55, 54],
+	8: [], 9: [], 10: [],
+	11: [], 14: [], 15: [], 16: [],
+	17: [], 18: [],
+	19: [], 20: [], 21: [],
+	23: [], 24: [], 25: [],
 }
 
 
@@ -792,6 +810,56 @@ const STRIKE_ANI := {
 	_Stk.JUMP_KICK: 23, _Stk.FLIP_KICK: 25, _Stk.FLIP_PUNCH: 24,
 	_Stk.ROUNDH: 21, _Stk.KNEE: 19, _Stk.ELBOW: 16,
 }
+## **How long a strike is LIVE, and it is not a fraction of the clip.**
+##
+## `t_attk2` (0x000594d4) is the swing loop and it is four lines: set
+## `pl->0x1c = pl->0x48`, call `strike_check_a0`, and if nothing was hit wait
+## one frame and decrement `pl->0x44`. So the strike is checked once per game
+## frame for exactly `pl->0x44` frames from the start of the move.
+##
+## `pl->0x48` in the same loop is the STRIKE ID, and reading it back out of
+## every move proc confirms this port's numbering against the engine's: the
+## roundhouse sets 13, the sweep 4, the knee 14, the elbow 15 -- which are the
+## ids in umk3_strikes.gd, in order, with nothing assumed.
+##
+## The port used to make the strike live for the middle half of the clip, and
+## said so. It does not have to guess any more.
+const STRIKE_LIVE := {
+	_Stk.HIKICK: 6, _Stk.LOKICK: 6,          # t_kick2       pl->0x44 = 6
+	_Stk.HI_PUNCH: 5, _Stk.LO_PUNCH: 5,      # t_jhp4/t_jmp4            = 5
+	_Stk.SWEEP: 1, _Stk.DUCK_PUNCH: 1,
+	_Stk.DUCK_KICKH: 5, _Stk.DUCK_KICKL: 2,
+	_Stk.UPPERCUT: 1, _Stk.ROUNDH: 3,
+	_Stk.KNEE: 1, _Stk.ELBOW: 5,
+	# The air attacks' own count has not been read; the whole swing stands in
+	# while the fighter is off the ground. CHOSEN.
+	_Stk.JUMP_PUNCH: 3, _Stk.JUMP_KICK: 3,
+	_Stk.FLIP_PUNCH: 3, _Stk.FLIP_KICK: 3,
+}
+
+## **The retraction has its own rate, and it is not the swing's.**
+##
+## `t_kick2` (0x0004c9e4) sets `pl->0x1c = 3` immediately before handing to
+## `t_retract_strike_act`, so a kick swings at 1 and comes back at 3 -- it
+## snaps out and returns slowly, which is what a kick looks like.
+## `t_stat_do_uppercut` sets 4 at the same moment. Everything else reaches the
+## retraction through `t_retract_strike` (0x0004cb48), which sets the tag to
+## zero and touches nothing else, so those come back at whatever they went out
+## at.
+const STRIKE_RETRACT := {
+	_Stk.HIKICK: 3, _Stk.LOKICK: 3, _Stk.UPPERCUT: 4,
+}
+
+const STRIKE_RECOVERY := {
+	_Stk.HI_PUNCH: 19,
+}
+
+## **A connected kick freezes.** `t_kick2` state 0x31a: if `pl->0x5c` came back
+## non-zero -- the strike hit something -- it sets `task->0xfc = 0xc` and waits
+## twelve frames before retracting. A kick that MISSES retracts at once. That
+## pause is the weight of the hit, and this port did not have it.
+const HIT_FREEZE := 12
+
 const STRIKE_RATE := {
 	_Stk.HIKICK: 1, _Stk.LOKICK: 1, _Stk.HI_PUNCH: -1, _Stk.LO_PUNCH: -1,
 	_Stk.SWEEP: 3, _Stk.DUCK_PUNCH: 3, _Stk.DUCK_KICKH: 3,
@@ -910,6 +978,8 @@ class Fight extends RefCounted:
 	var prev_buttons := 0
 	## Which of those bits went down this frame -- `swscan`'s press set.
 	var went := 0
+	## Frames of hit-stop left: a connected kick holds its extended frame.
+	var freeze := 0
 	## **Which strike this attack resolved to, decided once.** The engine's
 	## joy proc picks the knee, the elbow, the roundhouse or the sweep at the
 	## moment the button goes down and jumps to THAT proc, which then sets the
@@ -917,6 +987,11 @@ class Fight extends RefCounted:
 	## this did -- let a fighter walk out of knee range mid-swing and change
 	## which attack he was throwing.
 	var strike := -1
+	## **The punch chain window**, counting down exactly as `obj->a10` does
+	## inside `t_punch_sleep` (0x00030eec). Five frames for either punch,
+	## set from STRIKE_LIVE. Zero means the window is shut and the swing
+	## retracts. Only the two punches ever open it -- see `_chain_punch`.
+	var chain_left := 0
 	## Was the stick held AWAY from the opponent when the button went down?
 	## `is_stick_away` (0x00055df0) is what turns a high kick into a
 	## roundhouse and a low kick into a sweep.
@@ -1187,6 +1262,7 @@ func reset() -> void:
 		f.no_block = false
 		f.went = 0
 		f.strike = -1
+		f.freeze = 0
 		f.airborne_launch = false
 		f.turbo = RUN_MAX
 		f.turbo_pen = 0
@@ -1280,8 +1356,10 @@ func _move_frames(sid: int) -> int:
 	var st := _stream(ani)
 	if st.is_empty():
 		return RATE_STANCE
-	var n: int = (st[2] as Array).size() + (ANI_TAIL.get(ani, []) as Array).size()
-	return n * _strike_rate(sid)
+	# Out at its own rate, back at the retraction's.
+	var p1: int = (st[2] as Array).size()
+	var p2: int = (ANI_TAIL.get(ani, []) as Array).size()
+	return p1 * _strike_rate(sid) + p2 * _retract_rate(sid)
 
 
 ## The rate an attack plays at. -1 in the table means the engine never set one
@@ -1293,6 +1371,15 @@ func _strike_rate(sid: int) -> int:
 	return maxi(1, r + rate_bias)
 
 
+## The rate the retraction comes back at.
+func _retract_rate(sid: int) -> int:
+	if STRIKE_RETRACT.has(sid):
+		return maxi(1, int(STRIKE_RETRACT[sid]) + rate_bias)
+	return _strike_rate(sid)
+
+func _recovery_frames(sid: int) -> int:
+	return maxi(0, int(STRIKE_RECOVERY.get(sid, 0)))
+	
 ## Which strike id this fighter's current move actually produces.
 ##
 ## **A button is not a move.** `t_joy_hi_kick` asks `is_stick_away` first and
@@ -1304,21 +1391,38 @@ func _strike_rate(sid: int) -> int:
 ##
 ## `dist` is centre to centre, which is exactly what `get_x_dist` (0x0002f3a0)
 ## returns: |other.x - my.x|, no boxes involved.
+##
+## **The two kicks ask their two questions in OPPOSITE orders, and that is not
+## a detail.** This function used to ask `away` first for both, which is right
+## for the high kick and wrong for the low one.
+##
+##     t_joy_hi_kick (0x0002f2c8)   is_stick_away FIRST, then t_knee_check
+##     t_joy_lo_kick (0x0002f4d4)   t_knee_check FIRST, then is_stick_away
+##
+## `t_joy_lo_kick` state 0 pushes `t_knee_check` and nothing else; only when
+## the knee declines does state 0x236 read the stick. The decompilation's own
+## comment on that state is "The knee check declined. Only now does the stick
+## matter."
+##
+## So back+LK at close range is a KNEE, not a sweep. Back+HK at close range IS
+## a roundhouse, because that one really does check the stick first.
 func _resolve_strike(f: Fight, mv: int, dist: int, away: bool) -> int:
 	if not MOVE_STRIKE.has(mv):
 		return -1
 	var id: int = MOVE_STRIKE[mv]
 	match mv:
 		MV_HI_KICK:
+			# stick first -- t_joy_hi_kick state 0
 			if away:
 				return _Stk.ROUNDH
 			if dist <= _Stk.CLOSE:
 				return _Stk.KNEE
 		MV_LO_KICK:
-			if away:
-				return _Stk.SWEEP
+			# knee first -- t_joy_lo_kick state 0, stick only at 0x236
 			if dist <= _Stk.CLOSE:
 				return _Stk.KNEE
+			if away:
+				return _Stk.SWEEP
 		MV_HI_PUNCH:
 			if dist <= _Stk.CLOSE:
 				return _Stk.ELBOW
@@ -1379,9 +1483,15 @@ func _start_attack(f: Fight, mv: int, dist: int) -> void:
 	f.st = St.ATTACK
 	f.move = mv
 	f.strike = _resolve_strike(f, mv, dist, f.stick_away)
-	f.timer = _move_frames(f.strike)
+	f.timer = _move_frames(f.strike) + _recovery_frames(f.strike)
 	f.timer_total = f.timer
 	f.connected = false
+	# `obj->a10 = 5` in t_jhp4/t_jhp5/t_jmp4/t_jmp5, counted down by
+	# t_punch_sleep. Only the two punches push that loop -- the kicks push
+	# t_striker, which has no chain -- so only they open a window here.
+	f.chain_left = 0
+	if f.strike == _Stk.HI_PUNCH or f.strike == _Stk.LO_PUNCH:
+		f.chain_left = int(STRIKE_LIVE.get(f.strike, 0))
 	if audio:
 		# `t_stat_do_hi_kick`, `t_stat_do_uppercut` and `_sweep_sounds` are the
 		# three that take `big_whoosh`; the punches and the flips take
@@ -1408,6 +1518,75 @@ func _start_attack(f: Fight, mv: int, dist: int) -> void:
 		var id := f.strike
 		var heavy := id == _Stk.UPPERCUT or id == _Stk.HIKICK 			or id == _Stk.ROUNDH or id == _Stk.SWEEP or id == _Stk.LOKICK
 		audio.swing(heavy, id != _Stk.UPPERCUT)
+
+
+## **The jab chain.** `t_punch_sleep` (0x00030eec) and state B of the four
+## punch swings, together.
+##
+## The two punches -- and only the two punches -- push `t_punch_sleep` after
+## their strike check. The kicks do not: `t_kick2` pushes `t_striker`, whose
+## answer is "did it connect" and nothing else, so a kick has no chain and
+## never had one. Same for the knee and the elbow, which share t_kick2's shape.
+##
+## What the loop actually compares is two BUTTON-QUEUE ENTRIES, not two
+## buttons. `get_last_button` resets the ring cursor to the head and steps back
+## one, so it answers "the entry before the head":
+##
+##   * holding queues nothing, the head does not move, the two readings are the
+##     same word -- burn one of the five frames in `obj->a10` and sleep;
+##   * pressing anything, INCLUDING the same button again, queues a fresh entry
+##     with a fresh timestamp -- the readings differ and the chain is allowed.
+##
+## So it is tapped, not held, and re-tapping HP is the ordinary case.
+##
+## Then `am_i_facing_him` gates it: turn your back mid-string and it drops.
+##
+## Which continuation is the entry's HIGH halfword, which `stick_look_lr`
+## (0x0005369c) establishes is the button code, and `four_button_switch`
+## (0x00057274) fixes at HP 0, LP 1, BL 2, HK 3, LK 4, RUN 5 -- the same order
+## as BT_STANCE here, and the same order `_pressed_button` returns.
+##
+## The four swings spell the branch out in opposite orders:
+##
+##     t_jhp4 (high)   sel 0 -> t_jhp5            sel 1 -> t_joy_punch_htm1
+##     t_jhp5 (high)   sel 0 -> t_jhp4            sel 1 -> t_joy_punch_htm2
+##     t_jmp4 (low)    sel 0 -> t_joy_punch_mth1  sel 1 -> t_jmp5
+##     t_jmp5 (low)    sel 0 -> t_joy_punch_mth2  sel 1 -> t_jmp4
+##
+## **So the button you press is the punch you get**, whichever punch you are
+## already in: HP lands in the high chain, LP in the low one, and BL, HK, LK
+## or RUN all retract. "Continue" and "cross over" turned out to be one rule
+## seen from two sides.
+##
+## **The cross-over is the half that is not 1:1 yet.** Crossing goes through
+## `t_joy_punch_htm1/2` or `mth1/2`, which walk six zero-terminators into the
+## animation stream to reach its transition parts, and this port does not cut
+## the streams that way -- so a cross lands on the other punch's ordinary swing
+## instead of on its transition. The BRANCH is the binary's; the frames it
+## arrives at are not, and that is the one thing here still owed.
+func _chain_punch(f: Fight, other: Fight, raw: int) -> bool:
+	if f.chain_left <= 0:
+		return false
+	if f.strike != _Stk.HI_PUNCH and f.strike != _Stk.LO_PUNCH:
+		return false
+	f.chain_left -= 1
+	var b := _pressed_button(f, raw)
+	if b < 0:
+		# Nothing queued this frame. The window closes on its own.
+		return false
+	# `am_i_facing_him` -- the chain needs you still turned towards him.
+	var toward := 1 if other.xi() >= f.xi() else -1
+	if toward != f.facing:
+		return false
+	match b:
+		0:
+			_start_attack(f, MV_HI_PUNCH, absi(other.xi() - f.xi()))
+		1:
+			_start_attack(f, MV_LO_PUNCH, absi(other.xi() - f.xi()))
+		_:
+			return false          # BL, HK, LK, RUN all retract
+	f.vx = 0
+	return true
 
 
 ## The special the fighter just asked for, or an empty dictionary.
@@ -1560,6 +1739,15 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			f.vx = 0
 			return
 		St.ATTACK:
+			# `t_kick2` state 0x31a: a connected kick waits twelve frames on
+			# its extended frame before it starts coming back.
+			if f.freeze > 0:
+				f.freeze -= 1
+				f.timer += 1
+				return
+			# The punch chain, before the timer is allowed to run out.
+			if _chain_punch(f, other, raw):
+				return
 			if f.timer == 0:
 				f.st = St.JUMP if airborne else St.STANCE
 				f.table = BT_JUMP if airborne else BT_STANCE
@@ -1864,16 +2052,21 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		if not a.tele_wrapped:
 			return
 	else:
-		# The active window: from a quarter of the way in to three quarters. A
-		# choice, and the only one left in this function.
+		# **`t_attk2`'s own window**: live from the first frame of the move for
+		# `pl->0x44` game frames, one check a frame. Not a fraction of the clip
+		# any more -- see STRIKE_LIVE.
+		var sid0 := _strike_now(a, b)
+		var live: int = int(STRIKE_LIVE.get(sid0, 3)) * maxi(1, _strike_rate(sid0))
 		var elapsed := a.timer_total - a.timer
-		if elapsed < a.timer_total / 4 or elapsed > (a.timer_total * 3) / 4:
+		if elapsed > live:
 			return
 	if not _overlap(_strike_box(a, stk), _body_box(b)):
 		return
 
 	a.connected = true
 	var sid := _strike_now(a, b)
+	if HIT_FREEZE > 0 and (sid == _Stk.HIKICK or sid == _Stk.LOKICK):
+		a.freeze = HIT_FREEZE
 	var dmg: int = stk[STK_DMG]
 	var away := 1 if b.xi() >= a.xi() else -1
 	b.buf.clear()
@@ -2339,8 +2532,19 @@ func tick() -> void:
 		if s.is_empty():
 			continue
 		var n: int = _frames_of(f).size()
-		if not f.tick_ani(n, s[1]):
+		if f.st == St.ATTACK and f.freeze > 0:
 			continue
+		var anim_loop: bool = s[1]
+		
+		if f.st == St.ATTACK and f.strike == _Stk.HI_PUNCH:
+			anim_loop = false
+		if not f.tick_ani(n, anim_loop):
+			continue
+		# Crossing into part two is where the retraction's own rate starts.
+		if f.st == St.ATTACK and f.strike >= 0:
+			var p1: int = (s[2] as Array).size()
+			if f.ani_index >= p1:
+				f.ani_rate = _retract_rate(f.strike)
 		if audio and (f.st == St.WALK_F or f.st == St.WALK_B):
 			# Two footfalls in the cycle. WHICH frames they land on is a choice:
 			# the clip names them SCWALK1..9 and nothing marks contact.

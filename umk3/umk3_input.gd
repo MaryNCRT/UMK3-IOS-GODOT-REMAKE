@@ -78,25 +78,53 @@ const AXIS := 1000
 const AXIS_ON := 0.5
 
 
-## **What identifies a pad across a restart.**
+## **What identifies a pad across a restart, and why there is more than one.**
 ##
-## `get_joy_guid` is the right answer for anything on the SDL path -- a
-## DualSense, a DualShock, a Pro Controller -- but on Windows every
-## Xbox-compatible pad comes through XInput and Godot reports the GUID
-## `__XINPUT_DEVICE__` for ALL of them. Two Xbox pads would be the same string
-## and a saved choice would be meaningless.
+## A saved choice is only worth saving if the same pad answers to the same name
+## next time. No single identifier manages that everywhere:
 ##
-## `get_joy_info` carries `xinput_index` for exactly those, which is the slot
-## the driver gave it and is stable while it stays plugged into the same port.
-## That is the best identity available; the name is the last resort.
-static func ident(d: int) -> String:
+##   * `get_joy_guid` is right for anything on the SDL path -- a DualSense, a
+##     DualShock, a Pro Controller -- but on Windows every Xbox-compatible pad
+##     comes through XInput and reports the GUID `__XINPUT_DEVICE__` for ALL of
+##     them, so two Xbox pads would be the same string.
+##   * `get_joy_info` carries `vendor_id` and `product_id` for the SDL ones.
+##     Those are fixed per MODEL and never change between runs, drivers or
+##     ports, which makes them the best thing to save.
+##   * XInput pads carry `xinput_index` instead -- the slot the driver gave it.
+##   * The name is the last resort.
+##
+## So a device answers to SEVERAL names and `detect` matches a saved choice
+## against all of them. That is not belt and braces: it is what makes a choice
+## saved by an older build -- when only the GUID was written -- still resolve
+## today instead of coming back as "pad not connected", which is exactly the
+## trap that made a pad look broken.
+static func idents(d: int) -> Array:
+	var out: Array = []
+	var info := Input.get_joy_info(d)
+	var vid := int(info.get("vendor_id", 0))
+	var pid := int(info.get("product_id", 0))
+	if vid != 0 or pid != 0:
+		out.append("%04x:%04x" % [vid, pid])
+	if info.has("xinput_index"):
+		out.append("xinput:%d" % int(info["xinput_index"]))
 	var g := Input.get_joy_guid(d)
 	if g != "" and g != "__XINPUT_DEVICE__":
-		return g
-	var info := Input.get_joy_info(d)
-	if info.has("xinput_index"):
-		return "xinput:%d" % int(info["xinput_index"])
-	return "pad:%s" % Input.get_joy_name(d)
+		out.append(g)
+	var nm := Input.get_joy_name(d)
+	if nm != "":
+		out.append("pad:%s" % nm)
+	return out
+
+
+## The one that gets SAVED: the most stable of them.
+static func ident(d: int) -> String:
+	var l := idents(d)
+	return str(l[0]) if not l.is_empty() else "pad:?"
+
+
+## Does this device answer to that saved name?
+static func answers_to(d: int, want: String) -> bool:
+	return want != "" and idents(d).has(want)
 
 
 ## Is one binding down on one pad? Buttons and axes, by the same code.
@@ -176,7 +204,7 @@ func detect() -> void:
 			continue
 		var got := false
 		for d in pads:
-			if not taken.has(d) and ident(int(d)) == pref[i]:
+			if not taken.has(d) and answers_to(int(d), pref[i]):
 				device[i] = int(d)
 				taken[d] = true
 				got = true
@@ -192,10 +220,9 @@ func detect() -> void:
 func choices(player: int) -> Array:
 	var out := [KB]
 	for d in Input.get_connected_joypads():
-		var id := ident(int(d))
-		if id == pref[1 - player]:
+		if answers_to(int(d), str(pref[1 - player])):
 			continue
-		out.append(id)
+		out.append(ident(int(d)))
 	# A named pad that is unplugged stays on the list, or cycling away from it
 	# would silently throw the choice away.
 	if pref[player] != KB and pref[player] != "" and not out.has(pref[player]):
@@ -213,7 +240,7 @@ func choice_name(which: String) -> String:
 	if which == KB or which == "":
 		return "keyboard only"
 	for d in Input.get_connected_joypads():
-		if ident(int(d)) == which:
+		if answers_to(int(d), which):
 			return Input.get_joy_name(int(d))
 	return "pad not connected"
 

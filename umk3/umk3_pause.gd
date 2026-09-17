@@ -352,7 +352,7 @@ const CELL_W := 96.0
 func _draw_controls(vp: Vector2, font: Font) -> void:
 	var mouse := get_local_mouse_position()
 	var w := COL_W * 2.0 + 56.0
-	var h := ROW_H * float(ROWS) + 168.0
+	var h := ROW_H * float(ROWS) + 182.0
 	var px := maxf(8.0, (vp.x - w) * 0.5)
 	var py := maxf(8.0, (vp.y - h) * 0.42)
 	# Opaque: the debug read-out is a Label behind this and a panel you can
@@ -452,6 +452,26 @@ func _draw_controls(vp: Vector2, font: Font) -> void:
 		"click a cell to rebind it   TAB %s   left/right swaps player   ESC back"
 		% ("pad column" if capture_pad else "key column"),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.45, 0.45, 0.5))
+
+	# **What the game can actually see.** A pad that does not work is either
+	# not here or not chosen, and those are very different problems; this says
+	# which without anybody having to guess.
+	var pads := Input.get_connected_joypads()
+	var line := "no pads detected"
+	if not pads.is_empty():
+		var bits: Array = []
+		for d in pads:
+			var who := "-"
+			if input:
+				if int(input.device[0]) == int(d):
+					who = "P1"
+				elif int(input.device[1]) == int(d):
+					who = "P2"
+			bits.append("%d %s [%s] %s" % [int(d), Input.get_joy_name(int(d)),
+				_Input.ident(int(d)), who])
+		line = "pads:  " + "   ".join(bits)
+	draw_string(font, Vector2(px + 28.0, py + h - 2.0), line,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.45, 0.6, 0.5))
 
 
 ## The device cell: **two arrows you can click and the name between them**,
