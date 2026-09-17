@@ -520,6 +520,12 @@ func _unhandled_input(e: InputEvent) -> void:
 				_Effects.opacity = maxf(0.0, _Effects.opacity - 0.05)
 			KEY_F7:
 				_Effects.opacity = minf(1.0, _Effects.opacity + 0.05)
+			# Blend every animation frame instead of following the engine's
+			# own hard-cut rule, which steps everything above rate 2. NOT a
+			# reading -- see `_smooth` in umk3_fight.gd. Off by default.
+			KEY_F12:
+				if _fight:
+					_fight.smooth_all = not _fight.smooth_all
 			# The animation rate, for the clips whose own rate has not been
 			# recovered. Same reason as the fog: a feel is dialled, not argued.
 			# Lower is FASTER -- it is game frames held per animation frame.

@@ -681,6 +681,9 @@ const LAND_WAIT := 3
 ## `_AnimSmoothWindowSize`, the word at 0x00171368. The front end borrows it
 ## at 0x28 and one other path at 0x14, but the value a fight runs with is 2.
 const ANIM_SMOOTH_WINDOW := 2
+## Blend every frame instead of following the engine's hard-cut rule. A
+## preference, not a reading -- see `_smooth`. Off means 1:1.
+var smooth_all := false
 ## The ring is 64 entries: every index in the function is masked with 0x3f.
 const ANIMHIST := 64
 
@@ -1903,9 +1906,32 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			if _chain_punch(f, other, raw):
 				return
 			if f.timer == 0:
-				f.st = St.JUMP if airborne else St.STANCE
-				f.table = BT_JUMP if airborne else BT_STANCE
+				# **An air attack ends when he LANDS, not when the clip runs
+				# out.** `t_wait_for_landing` (0x000574a4) sleeps one frame at
+				# a time, asks `is_he_airborn` every pass and only unwinds
+				# when the answer is no:
+				#
+				#     token 0       task->0xfc = 1 ; return 1
+				#     token 0x15c3  get_his_action -> 0x610 ? unwind
+				#                   is_he_airborn  -> no    ? unwind
+				#                   otherwise sleep again
+				#
+				# This port ended the attack on its timer instead, so a kick
+				# whose animation finished in the air left the fighter holding
+				# its last pose, hanging there until he happened to touch the
+				# floor. That is the floating, and it is not a missing
+				# function -- the whole landing chain is decompiled and the
+				# port simply did not use it.
+				#
+				# The clip is over either way, so the pose holds on its last
+				# frame while the wait runs, which is what the engine does
+				# too: nothing advances the animation during the wait.
+				if airborne:
+					return
+				f.st = St.STANCE
+				f.table = BT_STANCE
 				f.move = MV_NONE
+				f.vx = 0
 			return
 		St.SPECIAL:
 			if f.special == _Moves.SP_SPEAR:
@@ -2912,6 +2938,17 @@ func _smooth(f: Fight, cur: int) -> Array:
 	var frame_after: int = f.hist[j & 0x3f]
 	var frame_before: int = f.hist[k & 0x3f]
 	var hard_cut := (fwd >= window) if (0x3f - window >= back) else true
+	# **NOT 1:1, and off by default.** The rule above is the engine's and it
+	# hard cuts almost everything: at rate 3 a frame is held long enough that
+	# `fwd >= window` is always true, so the punches step and only the rate-1
+	# swings blend. The original game looks like that.
+	#
+	# `smooth_all` overrides it for anyone who would rather have in-betweens
+	# everywhere than have the original's cadence. It is a preference, not a
+	# reading, and it is spelt as its own switch so nobody later mistakes it
+	# for something the binary says. F7 toggles it.
+	if smooth_all and not any_empty and held >= 0:
+		hard_cut = false
 
 	f.hist_cursor += 1
 
