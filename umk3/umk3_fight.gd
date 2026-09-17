@@ -660,13 +660,92 @@ const LAND_WAIT := 3
 ## out, and snapped to the stance. The three ducking ones end on 22, which is
 ## the ducking pose -- they return to a crouch rather than to standing, which
 ## is exactly right and is not something anybody would have guessed.
+## **Verified part by part against the streams, and the punches are NOT here.**
+##
+## The tails below are each animation's PART 2, which the cursor reaches by
+## simply carrying on: `t_retract_strike` (0x0004cb48) clears the tag and hands
+## to `t_retract_strike_act`, and neither touches `pl->0x40` or the rate, so the
+## stream runs on from wherever the swing left it.
+##
+## **The two punches do not work that way and the old table here was wrong.**
+## It listed SCHIPUNCH's tail as 83 84 85 -- but that is part 2, which is what
+## `t_jhp5` plays as the SECOND JAB of the chain, not a retraction. The punches
+## re-seat the cursor explicitly instead: `t_joy_un_hi_punch1` sets 0x40 = 14
+## and walks one zero, `t_joy_un_hi_punch2` walks two, and `t_unhip1`
+## (0x0002f704) then walks TWO MORE before playing. Three zeros and four zeros,
+## so part 4 and part 5 -- which are [81, 80] and [86], the arm coming back and
+## a settle. Those live in PUNCH_PART below, picked by which swing you were in.
+##
+## That mismatch is why this dict was emptied by hand: the retraction was
+## playing a second jab and looked broken. It was.
 const ANI_TAIL := {
-	8: [], 9: [], 10: [],
-	11: [], 14: [], 15: [], 16: [],
-	17: [], 18: [],
-	19: [], 20: [], 21: [],
-	23: [], 24: [], 25: [],
+	8: [37, 36, 22],                     # SCDUCKPUNCH   back to the crouch
+	9: [28, 27, 26, 22],                 # SCDUCKHIKICK  "
+	10: [34, 34, 22],                    # SCDUCKLOKICK  34 twice, as written
+	11: [274],                           # SCUPPERCUT    one frame, a settle
+	16: [9, 8],                          # SCCOMBO
+	17: [78, 77, 76, 75, 74],            # SCHIKICK      the swing, backwards
+	18: [134, 133, 132, 131, 130],       # SCLOKICK      "
+	19: [109, 108],                      # SCKNEECOMBO
+	20: [257, 258, 259],                 # SCSWEEPKICK   forward, not reversed
+	21: [213, 214, 215],                 # SCSPINHOOK    "
+	23: [106, 105],                      # SCJUMPKICK
+	24: [63, 62],                        # SCFLIPUNCH
+	25: [55, 54],                        # SCFLIPKICK
+	# 6 SCDUCKBLOCK and 12 SCBLOCK have NO tail: their part 2 is the start of
+	# the next animation in the shared stream (SCDUCKTURN and SCDUCK), not a
+	# return. Absent on purpose.
 }
+
+
+## **The two punch streams, as their real PARTS.**
+##
+## ani 14 and ani 15 are one contiguous block -- ani 15's pointer lands on what
+## is ani 14's part 8 -- and the punch procs walk it with a cursor. Each swing
+## proc plays whatever part the cursor sits on and leaves it at the next one;
+## the retraction and cross-over procs SEAT the cursor at a numbered part.
+## `next` is where the cursor ends up, following the stream's own jumps.
+##
+##     H1  t_joy_hi_punch seats it here (get_char_ani)
+##     H2  what t_jhp5 plays after H1
+##     H3  what t_jhp4 plays after H2; its jump sends the cursor back to H2,
+##         so a held-up jab string alternates H2, H3, H2, H3...
+##     H4  t_joy_un_hi_punch1 + t_unhip1  -- retract out of an A swing
+##     H5  t_joy_un_hi_punch2 + t_unhip1  -- retract out of a B swing
+##     H6  t_joy_punch_htm1   -- cross to the low punch, out of an A swing
+##     H7  t_joy_punch_htm2   -- cross to the low punch, out of a B swing
+##
+## and L1..L7 the same for SCLOPUNCH through mth1/mth2. Note the cross parts
+## MIX frames from both punches -- 83 is SCHIPUNCH4 and 140 is SCLOPUNCH5 --
+## which is what makes them transitions rather than ordinary swings, and is the
+## check that these are the right parts.
+## `own` is which punch the PROC belongs to while this part plays, and it is
+## not always the stream the part lives in. The cross parts are the catch: H6
+## is ani 14's part 6, but `t_joy_punch_htm1` seats it and then installs
+## `t_jmp5` -- a LOW punch swing. So the frames come out of the high stream
+## while the fighter is already throwing the low punch, which is exactly what
+## a transition is, and it decides the strike, the tag and which retraction
+## the swing falls out to.
+const PUNCH_PART := {
+	"H1": {"f": [80, 81, 82], "next": "H2", "own": "H"},
+	"H2": {"f": [83, 84, 85], "next": "H3", "own": "H"},
+	"H3": {"f": [84, 83, 82], "next": "H2", "own": "H"},
+	"H4": {"f": [81, 80], "next": "", "own": "H"},
+	"H5": {"f": [86], "next": "", "own": "H"},
+	"H6": {"f": [83, 140, 141], "next": "L3", "own": "L"},   # htm1 -> t_jmp5
+	"H7": {"f": [84, 137, 138], "next": "L2", "own": "L"},   # htm2 -> t_jmp4
+	"L1": {"f": [136, 137, 138], "next": "L2", "own": "L"},
+	"L2": {"f": [139, 140, 141], "next": "L3", "own": "L"},
+	"L3": {"f": [140, 139, 138], "next": "L2", "own": "L"},
+	"L4": {"f": [137, 136], "next": "", "own": "L"},
+	"L5": {"f": [86], "next": "", "own": "L"},
+	"L6": {"f": [139, 140, 85], "next": "H3", "own": "H"},   # mth1 -> t_jhp5
+	"L7": {"f": [139, 84, 82], "next": "H2", "own": "H"},    # mth2 -> t_jhp4
+}
+
+## `t_unhip1` sets `pl->0x1c = 2` before it plays, so both punches retract at
+## rate 2 whichever swing they came out of.
+const PUNCH_RETRACT_RATE := 2
 
 
 ## How long a knocked-down fighter lies there before getting up. **Chosen** --
@@ -992,6 +1071,16 @@ class Fight extends RefCounted:
 	## set from STRIKE_LIVE. Zero means the window is shut and the swing
 	## retracts. Only the two punches ever open it -- see `_chain_punch`.
 	var chain_left := 0
+	## **Where the punch cursor sits**, as a PUNCH_PART key ("H1".."L7"), or
+	## "" when this fighter is not in a punch. The swing procs read the part
+	## here and leave the cursor at its `next`; the retraction and cross
+	## procs seat it explicitly.
+	var punch_part := ""
+	## Which of the two swing procs is running: 0 is the A swing (t_jhp4 /
+	## t_jmp4) and 1 is the B swing (t_jhp5 / t_jmp5). It decides which
+	## retraction part a swing falls out to -- A takes part 4, B takes part 5
+	## -- and which swing a cross-over hands to on the other side.
+	var punch_swing := 0
 	## Was the stick held AWAY from the opponent when the button went down?
 	## `is_stick_away` (0x00055df0) is what turns a high kick into a
 	## roundhouse and a low kick into a sweep.
@@ -1373,6 +1462,10 @@ func _strike_rate(sid: int) -> int:
 
 ## The rate the retraction comes back at.
 func _retract_rate(sid: int) -> int:
+	# `t_unhip1` (0x0002f704) sets `pl->0x1c = 2` before playing, so both
+	# punches come back at 2 whichever swing they fell out of.
+	if sid == _Stk.HI_PUNCH or sid == _Stk.LO_PUNCH:
+		return maxi(1, PUNCH_RETRACT_RATE + rate_bias)
 	if STRIKE_RETRACT.has(sid):
 		return maxi(1, int(STRIKE_RETRACT[sid]) + rate_bias)
 	return _strike_rate(sid)
@@ -1490,8 +1583,16 @@ func _start_attack(f: Fight, mv: int, dist: int) -> void:
 	# t_punch_sleep. Only the two punches push that loop -- the kicks push
 	# t_striker, which has no chain -- so only they open a window here.
 	f.chain_left = 0
+	f.punch_part = ""
+	f.punch_swing = 0
 	if f.strike == _Stk.HI_PUNCH or f.strike == _Stk.LO_PUNCH:
 		f.chain_left = int(STRIKE_LIVE.get(f.strike, 0))
+		# `t_joy_hi_punch` / `t_joy_lo_punch` do `obj->field40 = 14 or 15`
+		# then `get_char_ani`, which parks the cursor at the stream's head.
+		f.punch_part = "H1" if f.strike == _Stk.HI_PUNCH else "L1"
+		# The cursor decides the length now, not the flattened stream.
+		f.timer = _punch_timer(f) + _recovery_frames(f.strike)
+		f.timer_total = f.timer
 	if audio:
 		# `t_stat_do_hi_kick`, `t_stat_do_uppercut` and `_sweep_sounds` are the
 		# three that take `big_whoosh`; the punches and the flips take
@@ -1558,12 +1659,11 @@ func _start_attack(f: Fight, mv: int, dist: int) -> void:
 ## or RUN all retract. "Continue" and "cross over" turned out to be one rule
 ## seen from two sides.
 ##
-## **The cross-over is the half that is not 1:1 yet.** Crossing goes through
-## `t_joy_punch_htm1/2` or `mth1/2`, which walk six zero-terminators into the
-## animation stream to reach its transition parts, and this port does not cut
-## the streams that way -- so a cross lands on the other punch's ordinary swing
-## instead of on its transition. The BRANCH is the binary's; the frames it
-## arrives at are not, and that is the one thing here still owed.
+## **The cross-over lands on its real frames now.** `t_joy_punch_htm1/2` and
+## `mth1/2` seat the animation cursor on a transition part and install the
+## other punch's swing; those parts are H6, H7, L6 and L7 in PUNCH_PART, and
+## each is three frames that MIX the two punches -- 83 is SCHIPUNCH4 and 140
+## is SCLOPUNCH5 -- which is what makes them transitions. See `_continue_punch`.
 func _chain_punch(f: Fight, other: Fight, raw: int) -> bool:
 	if f.chain_left <= 0:
 		return false
@@ -1578,15 +1678,56 @@ func _chain_punch(f: Fight, other: Fight, raw: int) -> bool:
 	var toward := 1 if other.xi() >= f.xi() else -1
 	if toward != f.facing:
 		return false
-	match b:
-		0:
-			_start_attack(f, MV_HI_PUNCH, absi(other.xi() - f.xi()))
-		1:
-			_start_attack(f, MV_LO_PUNCH, absi(other.xi() - f.xi()))
-		_:
-			return false          # BL, HK, LK, RUN all retract
+	if b > 1:
+		return false              # BL, HK, LK, RUN all retract
+	var stream := String(PUNCH_PART[f.punch_part]["own"])
+	var pressed := "H" if b == 0 else "L"
+	if pressed == stream:
+		# Same punch: the next swing proc plays the next part. H1->H2->H3,
+		# and H3's own jump sends the cursor back to H2, so the string
+		# alternates rather than running off the end.
+		_continue_punch(f, String(PUNCH_PART[f.punch_part]["next"]),
+			1 - f.punch_swing)
+	else:
+		# The other punch: seat the cursor on this stream's cross part --
+		# 6 out of an A swing, 7 out of a B swing -- and hand to the other
+		# stream's opposite swing, which is what htm1/htm2/mth1/mth2 do.
+		var cross := stream + ("6" if f.punch_swing == 0 else "7")
+		_continue_punch(f, cross, 1 - f.punch_swing)
 	f.vx = 0
 	return true
+
+
+## Put the fighter into the next swing of a punch chain without going back
+## through `_start_attack`, which would re-seat the cursor at the head.
+func _continue_punch(f: Fight, part: String, swing: int) -> void:
+	if part == "" or not PUNCH_PART.has(part):
+		return
+	# Which punch the PROC belongs to decides the strike and the tag -- which
+	# for a cross part is the other stream from the one the frames live in.
+	var stream := String(PUNCH_PART[part]["own"])
+	var mv := MV_HI_PUNCH if stream == "H" else MV_LO_PUNCH
+	f.st = St.ATTACK
+	f.move = mv
+	f.ani = MOVE_ANI[mv]
+	# **No substitution on a chained swing.** The elbow lives in
+	# `t_elbow_check`, which only `t_joy_hi_punch` pushes -- on the initial
+	# press. The chain installs `t_jhp4`/`t_jhp5` directly, so a jab thrown
+	# inside 74 units mid-string stays a jab and does not turn into an elbow.
+	f.strike = _Stk.HI_PUNCH if stream == "H" else _Stk.LO_PUNCH
+	f.punch_part = part
+	f.punch_swing = swing
+	f.ani_index = 0
+	f.ani_count = 1
+	f.ani_dir = 1
+	f.connected = false
+	f.chain_left = int(STRIKE_LIVE.get(f.strike, 0))
+	f.timer = _punch_timer(f)
+	f.timer_total = f.timer
+	if audio:
+		# Every swing makes its own noise: `rsnd_func(obj, 0xe)` and a
+		# `group_sound` on the first frame of t_jhp4/t_jhp5/t_jmp4/t_jmp5.
+		audio.swing(false, true)
 
 
 ## The special the fighter just asked for, or an empty dictionary.
@@ -2680,6 +2821,15 @@ func _ani_for(f: Fight) -> Array:
 ## two is the landing and `t_reaction_land` places it itself, and the getup's
 ## is another clip's frames entirely.
 func _frames_of(f: Fight) -> Array:
+	# **A punch plays the part its cursor is on, not the stream's head.**
+	# That is the whole difference between the punches and everything else:
+	# a kick swings part 1 and returns through part 2 every single time,
+	# while a jab walks H1, H2, H3, H2, H3... and falls out to a different
+	# retraction depending on which swing it was in when the window shut.
+	if f.st == St.ATTACK and f.punch_part != "" and PUNCH_PART.has(f.punch_part):
+		var part: Dictionary = PUNCH_PART[f.punch_part]
+		var out: Array = (part["f"] as Array).duplicate()
+		return out + _punch_tail(f)
 	var st := _stream(f.ani)
 	if st.is_empty():
 		return []
@@ -2687,6 +2837,32 @@ func _frames_of(f: Fight) -> Array:
 	if f.st == St.ATTACK and ANI_TAIL.has(f.ani):
 		return frames + (ANI_TAIL[f.ani] as Array)
 	return frames
+
+
+## How long the punch on the cursor lasts: its swing part at the swing's rate
+## plus its retraction at rate 2. The same split `_move_frames` makes for
+## everything else, except the parts come from the cursor instead of from the
+## flattened stream -- which matters because H3 is not the same length as H1.
+func _punch_timer(f: Fight) -> int:
+	if f.punch_part == "" or not PUNCH_PART.has(f.punch_part):
+		return 0
+	var swing: int = (PUNCH_PART[f.punch_part]["f"] as Array).size()
+	var tail: int = _punch_tail(f).size()
+	return swing * maxi(1, _strike_rate(f.strike)) 		+ tail * _retract_rate(f.strike)
+
+
+## The retraction a punch swing falls out to: part 4 out of an A swing and
+## part 5 out of a B swing, in whichever of the two streams the cursor is in.
+## `t_joy_un_hi_punch1` walks one zero and `t_unhip1` two more (part 4);
+## `t_joy_un_hi_punch2` walks two and `t_unhip1` two more (part 5).
+func _punch_tail(f: Fight) -> Array:
+	if f.punch_part == "":
+		return []
+	var stream := String(PUNCH_PART[f.punch_part]["own"])
+	var key := stream + ("4" if f.punch_swing == 0 else "5")
+	if not PUNCH_PART.has(key):
+		return []
+	return (PUNCH_PART[key]["f"] as Array).duplicate()
 
 
 ## One animation's [name, loops, frames], or an empty one.
