@@ -2939,13 +2939,38 @@ func _pose(f: Fight) -> void:
 		f.node.set_pose(frames[idx], frames[idx], 0.0)
 		return
 
-	var nxt: int = idx + 1
-	if nxt >= n:
-		# A one-shot holds its last frame; a loop goes round. Interpolating a
-		# held frame against itself is what keeps it still rather than drifting.
-		nxt = 0 if s[1] else idx
-	var frac := 1.0 - float(f.ani_count) / float(maxi(f.ani_rate, 1))
-	f.node.set_pose(frames[idx], frames[nxt], frac)
+	# **The engine does not blend on a clock, and mostly does not blend at
+	# all.** What `umk3_fighter.gd` used to call "what the engine does" was a
+	# fraction of the animation counter, and there is no such thing anywhere
+	# in the binary. `next_anirate` (0x0005a680) counts down and, while the
+	# counter is above zero, RETURNS -- the displayed frame does not move.
+	# Steps, not a ramp.
+	#
+	# The real smoothing is `PlayerAutoSmoothAnims` (gamecode/Players.c): a
+	# 64-entry ring of the frames this fighter has displayed, sampled
+	# `AnimSmoothWindowSize` ticks IN THE PAST -- 2 by default, the word at
+	# 0x00171368 -- with the blend chosen from how long the sampled frame was
+	# held on either side:
+	#
+	#     hardCut = (0x3f - window >= back) ? (fwd >= window) : 1
+	#
+	# So a frame held for two ticks or more after the sample is a HARD CUT:
+	# both frame slots get the same number and t goes to 0. At our rates that
+	# is nearly always, which is why this now cuts.
+	#
+	# Blending two poses that are not adjacent in time is what deformed the
+	# model -- and the cross-over parts made it obvious, because H6 runs
+	# SCHIPUNCH4 straight into SCLOPUNCH5 and half-way between those two is
+	# not a pose anybody drew.
+	#
+	# **Not yet 1:1:** the narrow case where the engine DOES blend, for a
+	# frame held fewer than two ticks. Reproducing it needs
+	# PlayerAutoSmoothAnims read against its own disassembly first -- its
+	# `mid > sample` test compares a run length against an unbounded cursor,
+	# which does not typecheck as transcribed, and guessing at it is how the
+	# invented fraction got here in the first place. Hard-cutting everything
+	# is the safe half of the truth, not the whole of it.
+	f.node.set_pose(frames[idx], frames[idx], 0.0)
 
 
 func _scene_x(f: Fight) -> float:

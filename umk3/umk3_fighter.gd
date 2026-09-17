@@ -48,14 +48,28 @@ const FIGHTER_METRES := 1.8
 const ENGINE_HEIGHT := 139.0
 const METRES_PER_UNIT := FIGHTER_METRES / ENGINE_HEIGHT
 
-## Build a fresh pose every frame, INTERPOLATED between the two the clip is
-## between, which is what the engine does.
+## Build a fresh pose every frame, interpolated between two frames.
 ##
-## The alternative -- caching whole frames and snapping between them -- was a
-## concession to the 5.3 ms a pose costs in GDScript, and it is not what the
-## original does. It stays available (`interpolate = false`) because a machine
-## that cannot afford the skinning should drop the in-betweens rather than the
-## frame rate, but it is not the default and it is not what ships.
+## **This comment used to say "which is what the engine does". It does not.**
+## The claim was never checked and it is what deformed the model on a hit.
+##
+## What is true: the engine has the machinery. `LerpQSTMatrix`,
+## `GetSlerpedQ` and `LerpVector3` are real, `CreateMatrixPaletteForGenerating## Mesh` takes two frame indices and a factor, and the blend is a component
+## LERP with a shortest-arc sign flip rather than a slerp.
+##
+## What is NOT true: that it blends between consecutive animation frames on a
+## clock. `next_anirate` (0x0005a680) holds the displayed frame still while its
+## counter runs down, and the factor comes from `PlayerAutoSmoothAnims`, which
+## samples a 64-entry ring of past frames two ticks behind and HARD CUTS
+## whenever the sampled frame was held two ticks or more. `umk3_fight.gd`
+## carries the reading.
+##
+## **The direction is also backwards here.** `LerpVector3` is
+## `out = a*t + b*(1-t)`, so the engine's t = 0 yields the SECOND frame;
+## `_pose_bones` below uses Godot's `lerp(a, b, frac)`, where 0 yields the
+## first. Anything that starts feeding a real factor through here has to flip
+## it, and that is left as a marker rather than silently corrected, because
+## nothing feeds a non-zero factor right now.
 var interpolate := true
 
 ## Use the imported Skeleton3D scene instead of skinning here.
