@@ -1094,6 +1094,12 @@ class Fight extends RefCounted:
 	## an empty slot, and while any slot is empty the whole thing hard cuts.
 	var hist := PackedInt32Array()
 	var hist_cursor := 0
+	## Where this fighter stood at the PREVIOUS tick. The simulation runs at a
+	## fixed 60 Hz whatever the monitor does, so without these the same
+	## position would be drawn two or three times running on a fast screen and
+	## the extra frames would buy nothing.
+	var prev_x := 0
+	var prev_y := 0
 	## Was this fighter off the ground on the previous pass? t_air_strike's
 	## height test is a comparison against the floor every frame; this is how
 	## the port notices the frame it stops being true on.
@@ -2735,6 +2741,9 @@ func _repell() -> void:
 
 ## One 60 Hz frame.
 func tick() -> void:
+	for f in fighters:
+		f.prev_x = f.x
+		f.prev_y = f.y
 	var raw := [_read_player(0), _read_player(1)]
 	last_raw = raw[0]
 	last_special = ""
@@ -3131,12 +3140,40 @@ func _pose(f: Fight) -> void:
 	# which does not typecheck as transcribed, and guessing at it is how the
 	# invented fraction got here in the first place. Hard-cutting everything
 	# is the safe half of the truth, not the whole of it.
-	var sm := _smooth(f, frames[idx])
-	# `_pose_bones` uses Godot's lerp, where 0 yields the FIRST argument; the
-	# engine's `LerpVector3` is `a*t + b*(1-t)`, where 0 yields the second. So
-	# the pair goes in swapped rather than the factor being flipped, which
-	# keeps both ends readable against their own source.
-	f.node.set_pose(int(sm[1]), int(sm[0]), float(sm[2]))
+	# **Blend inside the clip, and never across its end.**
+	#
+	# The engine's own smoothing is `PlayerAutoSmoothAnims` and `_smooth`
+	# below carries the reading of it -- a 64-entry ring, a sample two ticks
+	# in the past, a hard cut whenever the sampled frame was held that long.
+	# It is not used for the pose, and the reason is worth writing down
+	# rather than quietly dropping:
+	#
+	#   * it renders two ticks LATE, and at this port's 60 Hz logic tick that
+	#     is two of the three frames a punch has. Short clips disappeared
+	#     into the delay. Whether the original's logic ran at 60 or at 30 is
+	#     the one number `umk3_main.gd` still calls honestly open, and the
+	#     delay only makes sense once that is settled.
+	#   * its factor degenerates to ~0.5 (see `_smooth`), so what it buys on
+	#     the frames it does blend is a permanent half-step rather than a
+	#     ramp.
+	#
+	# So the pose blends between the frame being shown and the NEXT frame OF
+	# THE SAME CLIP, by how far the animation counter has run. Consecutive
+	# frames of one part are adjacent in time and safe to blend; what is not
+	# safe is blending across a part boundary or a wrap, which puts two
+	# unrelated poses together and is what deformed the model. Hence the
+	# hold on the last frame rather than a wrap to the first.
+	var nxt: int = idx + 1
+	if nxt >= n:
+		f.node.set_pose(frames[idx], frames[idx], 0.0)
+		return
+	# `ani_count` runs DOWN from `ani_rate`, so this rises 0 -> 1 across the
+	# frame. The spare fraction of a tick from the render clock rides on top,
+	# which is what makes a 144 Hz screen show 144 distinct poses rather than
+	# the same 60 twice over.
+	var r := float(maxi(f.ani_rate, 1))
+	var t := (r - float(f.ani_count) + clampf(render_alpha, 0.0, 1.0)) / r
+	f.node.set_pose(frames[idx], frames[nxt], clampf(t, 0.0, 1.0))
 
 
 func _scene_x(f: Fight) -> float:
@@ -3153,11 +3190,31 @@ func _scene_y(f: Fight) -> float:
 	return float(_ground_y() - f.yi()) * scale_units
 
 
+## How far past the last logic tick the frame being DRAWN sits, 0..1. Set by
+## the process loop from its own accumulator, and used for nothing the fight
+## decides -- no hit, no distance, no timer reads it. It is purely what the
+## eye gets between two ticks of a simulation that runs at a fixed rate.
+var render_alpha := 0.0
+
+
 func _place() -> void:
+	var a := clampf(render_alpha, 0.0, 1.0)
 	for f in fighters:
 		if not frozen:
 			_pose(f)
-		f.node.position = Vector3(_scene_x(f), _scene_y(f), 0.0)
+		# **The simulation is 60 Hz; the drawing is not.** `tick()` advances
+		# the fight at a fixed rate whatever the monitor runs at, and that
+		# was always right -- the fight is identical at 60 fps and at 144.
+		# What was missing is that this drew the latest tick and nothing
+		# else, so the extra frames of a fast screen showed the same pose
+		# twice. Drawing the point between the previous tick and this one is
+		# what turns them into motion.
+		var px := float(f.prev_x) + (float(f.x) - float(f.prev_x)) * a
+		var py := float(f.prev_y) + (float(f.y) - float(f.prev_y)) * a
+		f.node.position = Vector3(
+			px / float(ONE) * scale_units,
+			(float(_ground_y()) - py / float(ONE)) * scale_units,
+			0.0)
 		f.node.set_facing(f.facing)
 		_place_spear(f)
 	if blood:
@@ -3282,6 +3339,8 @@ func _process(dt: float) -> void:
 		n += 1
 	if n == MAX_CATCHUP:
 		_accum = 0.0
+	# Whatever is left over is how far past the last tick this drawn frame is.
+	render_alpha = float(_accum / step) if step > 0.0 else 0.0
 	_place()
 	_frame_camera()
 	_draw_boxes()
