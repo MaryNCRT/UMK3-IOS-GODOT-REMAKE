@@ -3157,23 +3157,29 @@ func _pose(f: Fight) -> void:
 	#     the frames it does blend is a permanent half-step rather than a
 	#     ramp.
 	#
-	# So the pose blends between the frame being shown and the NEXT frame OF
-	# THE SAME CLIP, by how far the animation counter has run. Consecutive
-	# frames of one part are adjacent in time and safe to blend; what is not
-	# safe is blending across a part boundary or a wrap, which puts two
-	# unrelated poses together and is what deformed the model. Hence the
-	# hold on the last frame rather than a wrap to the first.
-	var nxt: int = idx + 1
-	if nxt >= n:
-		f.node.set_pose(frames[idx], frames[idx], 0.0)
-		return
-	# `ani_count` runs DOWN from `ani_rate`, so this rises 0 -> 1 across the
-	# frame. The spare fraction of a tick from the render clock rides on top,
-	# which is what makes a 144 Hz screen show 144 distinct poses rather than
-	# the same 60 twice over.
-	var r := float(maxi(f.ani_rate, 1))
-	var t := (r - float(f.ani_count) + clampf(render_alpha, 0.0, 1.0)) / r
-	f.node.set_pose(frames[idx], frames[nxt], clampf(t, 0.0, 1.0))
+	# **THE POSES DO NOT INTERPOLATE, and the reason is the data.**
+	#
+	# This has now been tried three ways and looked wrong three times: as a
+	# clock fraction between consecutive frames, as a blend of everything
+	# (F12), and as a blend inside one clip. Each deformed the fighter, and
+	# the last one was the mildest but still visibly strange.
+	#
+	# The cause is not a bug in the blending. `SCHIPUNCH` is THREE FRAMES --
+	# 80, 81, 82 -- for a whole punch. These are not keyframes of a smooth
+	# curve sampled densely enough to interpolate; they are three drawings.
+	# Half way between the first and the second is a posture nobody ever
+	# made, and no amount of getting the maths right will invent one.
+	#
+	# The engine agrees. `PlayerAutoSmoothAnims` hard cuts whenever a frame
+	# is held two ticks or more, which at these rates is nearly always, and
+	# the little it does blend it blends between samples TWO TICKS APART in
+	# its own history rather than between a clip's keyframes.
+	#
+	# So the pose steps, exactly as the original steps. What does interpolate
+	# is POSITION, in `_place` -- that is real smoothness at a high frame
+	# rate and it cannot deform anything, because a fighter's place in the
+	# world is a number and not a drawing.
+	f.node.set_pose(frames[idx], frames[idx], 0.0)
 
 
 func _scene_x(f: Fight) -> float:
