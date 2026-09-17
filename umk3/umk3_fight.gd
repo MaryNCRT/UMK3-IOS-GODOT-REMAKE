@@ -1094,6 +1094,10 @@ class Fight extends RefCounted:
 	## an empty slot, and while any slot is empty the whole thing hard cuts.
 	var hist := PackedInt32Array()
 	var hist_cursor := 0
+	## Was this fighter off the ground on the previous pass? t_air_strike's
+	## height test is a comparison against the floor every frame; this is how
+	## the port notices the frame it stops being true on.
+	var was_airborne := false
 	## Was the stick held AWAY from the opponent when the button went down?
 	## `is_stick_away` (0x00055df0) is what turns a high kick into a
 	## roundhouse and a low kick into a sweep.
@@ -1743,6 +1747,41 @@ func _continue_punch(f: Fight, part: String, swing: int) -> void:
 		audio.swing(false, true)
 
 
+## The end of an air attack, which is two calls and not a state change.
+##
+## `t_air_strike` (mkstat.c) is the loop every airborne attack runs, and this
+## port did not have it. Its exit, once the fighter's y has reached the floor:
+##
+##     stop_me_player(obj)
+##     ground_player(obj)
+##
+## `stop_me_player` (0x00055c04) clears 0x1c, clears the other object's 0x20
+## and then applies a velocity -- which is zero, because 0x1c is where
+## `set_x_vel_player` reads from. So it is a full stop, horizontal and
+## vertical.
+##
+## `ground_player` (0x0005533c) is ten bytes: it copies the proc's 0x40 into
+## the other object's 0x12, which is to say **it SNAPS him to the floor**
+## rather than waiting for gravity to finish the job. This is the function
+## `_tick`'s own comment calls "code that has not been read"; it has now been
+## read, and this is it.
+##
+## The difference matters because the engine's height test is `>` against the
+## floor, so the frame the move ends on is the frame he is AT or PAST it --
+## and without the snap he ends the move a fraction below, or hangs a fraction
+## above, depending on where gravity happened to put him.
+func _ground_after_air_strike(f: Fight) -> void:
+	# ground_player: he is on the floor, exactly, not approximately.
+	f.y = _ground_y() * ONE
+	# stop_me_player: both velocities, and the gravity that would restart one.
+	f.vx = 0
+	f.vy = 0
+	f.g = 0
+	f.st = St.STANCE
+	f.table = BT_STANCE
+	f.move = MV_NONE
+
+
 ## The special the fighter just asked for, or an empty dictionary.
 ##
 ## **Bit 10 of the input word is the engine's own "a special was requested"**
@@ -1899,6 +1938,16 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.freeze -= 1
 				f.timer += 1
 				return
+			# **The height test runs every frame, not only at the end.**
+			# t_air_strike checks `proc->field40 > MK3_FIELD12(part)` on
+			# every pass of its loop -- the floor against where he is -- and
+			# grounds him the moment it stops being true. So an air attack
+			# that reaches the floor with clip left over ends THERE, rather
+			# than carrying on into a move being played by a man standing up.
+			if f.was_airborne and not airborne:
+				_ground_after_air_strike(f)
+				return
+			f.was_airborne = airborne
 			# The punch chain, before the timer is allowed to run out.
 			if _chain_punch(f, other, raw):
 				return
@@ -1920,15 +1969,21 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				# function -- the whole landing chain is decompiled and the
 				# port simply did not use it.
 				#
-				# The clip is over either way, so the pose holds on its last
-				# frame while the wait runs, which is what the engine does
-				# too: nothing advances the animation during the wait.
+				# The clip is over either way, so the pose holds on its
+				# last frame while the wait runs, which is what the engine
+				# does too: nothing advances the animation during the wait.
 				if airborne:
+					# **Still in flight.** t_air_strike hands to
+					# `t_flight_loop` once its counter runs out, and a flight
+					# is one velocity against one gravity. Make sure there IS
+					# a gravity: a fighter who reached this state with `g`
+					# zeroed -- the way a landing zeroes it -- would hang
+					# here for ever now that the move no longer ends on its
+					# timer. That was the floating.
+					if f.g == 0:
+						f.g = GRAVITY
 					return
-				f.st = St.STANCE
-				f.table = BT_STANCE
-				f.move = MV_NONE
-				f.vx = 0
+				_ground_after_air_strike(f)
 			return
 		St.SPECIAL:
 			if f.special == _Moves.SP_SPEAR:
