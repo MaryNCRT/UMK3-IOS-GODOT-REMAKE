@@ -46,7 +46,22 @@ const AA_SCALE := [1.0, 1.0, 1.0, 1.0, 2.0]
 
 ## 0 means no limit. The rest is the range asked for, at the refresh rates a
 ## monitor is actually likely to have.
-const FPS := [0, 30, 60, 75, 90, 120, 144, 165, 180, 200, 240]
+## **Sixty and thirty, and nothing else.**
+##
+## The rates in between were offered and they misbehave. The fight ticks at a
+## fixed 60 Hz (`TICK_HZ`) with an accumulator, so a drawn rate that is not a
+## whole fraction of it leaves a different remainder every frame: the
+## interpolation in `_place` then advances by an uneven amount each time and
+## the motion beats against the tick. 60 lands one drawn frame on one tick,
+## 30 lands one on two, and both are steady.
+##
+## Unlimited is gone for the same reason -- it is every uneven rate at once,
+## and whichever one the machine happens to hit.
+##
+## This is a port decision, not a reading. The rate the ORIGINAL drew at is
+## still the one number `umk3_main.gd` calls honestly open, and settling it
+## is what would let the engine's own two-tick smoothing back in.
+const FPS := [60, 30]
 
 var size := Vector2i(1280, 720)
 ## Which physical display. On one monitor it is always 0 and the row still
@@ -55,7 +70,7 @@ var screen := 0
 var mode := Mode.WINDOWED
 var aa := 0
 var vsync := true
-var fps_cap := 0
+var fps_cap := 60
 
 
 func _init() -> void:
@@ -154,7 +169,7 @@ func _resize() -> void:
 
 
 func fps_name() -> String:
-	return "unlimited" if fps_cap == 0 else "%d fps" % fps_cap
+	return "%d fps" % fps_cap
 
 
 func size_name() -> String:
@@ -190,3 +205,7 @@ func load_cfg() -> void:
 	aa = int(c.get_value("video", "aa", aa))
 	vsync = bool(c.get_value("video", "vsync", vsync))
 	fps_cap = int(c.get_value("video", "fps", fps_cap))
+	# A config written before the list was cut to 60 and 30 can hold 0 or 144.
+	# Fall back rather than run at a rate the tick does not divide.
+	if not FPS.has(fps_cap):
+		fps_cap = 60
