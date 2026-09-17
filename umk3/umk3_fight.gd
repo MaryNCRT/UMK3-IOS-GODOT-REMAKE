@@ -678,6 +678,13 @@ const LAND_WAIT := 3
 ##
 ## That mismatch is why this dict was emptied by hand: the retraction was
 ## playing a second jab and looked broken. It was.
+## `_AnimSmoothWindowSize`, the word at 0x00171368. The front end borrows it
+## at 0x28 and one other path at 0x14, but the value a fight runs with is 2.
+const ANIM_SMOOTH_WINDOW := 2
+## The ring is 64 entries: every index in the function is masked with 0x3f.
+const ANIMHIST := 64
+
+
 const ANI_TAIL := {
 	8: [37, 36, 22],                     # SCDUCKPUNCH   back to the crouch
 	9: [28, 27, 26, 22],                 # SCDUCKHIKICK  "
@@ -1081,6 +1088,12 @@ class Fight extends RefCounted:
 	## retraction part a swing falls out to -- A takes part 4, B takes part 5
 	## -- and which swing a cross-over hands to on the other side.
 	var punch_swing := 0
+	## **The engine renders the PAST.** `PlayerAutoSmoothAnims` (0x0005bb44)
+	## keeps the last 64 frames a fighter displayed and draws the one sampled
+	## `ANIM_SMOOTH_WINDOW` ticks ago, not the one the logic just chose. -1 is
+	## an empty slot, and while any slot is empty the whole thing hard cuts.
+	var hist := PackedInt32Array()
+	var hist_cursor := 0
 	## Was the stick held AWAY from the opponent when the button went down?
 	## `is_stick_away` (0x00055df0) is what turns a high kick into a
 	## roundhouse and a low kick into a sweep.
@@ -2843,6 +2856,76 @@ func _frames_of(f: Fight) -> Array:
 ## plus its retraction at rate 2. The same split `_move_frames` makes for
 ## everything else, except the parts come from the cursor instead of from the
 ## flattened stream -- which matters because H3 is not the same length as H1.
+## `PlayerAutoSmoothAnims` (0x0005bb44), which is where the blend factor comes
+## from and it is nothing like a clock.
+##
+## Every tick the frame just chosen goes into a 64-entry ring, and the frame
+## RENDERED is the one sampled `ANIM_SMOOTH_WINDOW` ticks earlier. How long
+## that sampled frame was held on either side decides whether it is drawn on
+## its own or blended into its neighbour:
+##
+##     hardCut = (0x3f - window >= back) ? (fwd >= window) : 1
+##
+## with `back` counting matching entries before the sample (capped at 0x1f)
+## and `fwd` after it (capped at 0x3f). A frame held two ticks or more after
+## the sample is drawn alone. So at rate 3 -- the punches -- everything hard
+## cuts, and at rate 1 -- the kicks swing at 1 -- it blends. That is the
+## engine's own answer to why some moves look smooth and some look stepped,
+## and this port had it as all-or-nothing in both directions: first always
+## blended, which deformed the model, then never, which made everything step.
+##
+## **The factor degenerates.** `mid` is built from the two run lengths and
+## compared against `sample`, which is `cursor - window` and grows without
+## bound, so after the opening ticks of a round the first branch is
+## unreachable and `t` settles at almost exactly 0.5. That is what the code
+## does; whether the authors meant a ring-relative index there is not
+## knowable from here and is not guessed at. The comparison is transcribed as
+## written -- 0x0005bd12, `vcmpe.f32 s12, s14`, with s8 loaded from
+## `cursor - AnimSmoothWindowSize` at 0x0005bb92.
+##
+## Returns [frameA, frameB, t] in the ENGINE's sense, where t = 0 yields
+## frameB -- `LerpVector3` is `a*t + b*(1-t)`.
+func _smooth(f: Fight, cur: int) -> Array:
+	if f.hist.size() != ANIMHIST:
+		f.hist.resize(ANIMHIST)
+		f.hist.fill(-1)
+		f.hist_cursor = 0
+	f.hist[f.hist_cursor & 0x3f] = cur
+	var window := ANIM_SMOOTH_WINDOW
+	var sample := f.hist_cursor - window
+	var any_empty := false
+	for k in ANIMHIST:
+		if f.hist[k] == -1:
+			any_empty = true
+			break
+	var held: int = f.hist[sample & 0x3f]
+	var back := 0
+	var k := sample - 1
+	while f.hist[k & 0x3f] == held and back < 0x1f:
+		back += 1
+		k -= 1
+	var fwd := 0
+	var j := sample + 1
+	while f.hist[j & 0x3f] == held and fwd < 0x3f:
+		fwd += 1
+		j += 1
+	var frame_after: int = f.hist[j & 0x3f]
+	var frame_before: int = f.hist[k & 0x3f]
+	var hard_cut := (fwd >= window) if (0x3f - window >= back) else true
+
+	f.hist_cursor += 1
+
+	if hard_cut or any_empty or held < 0:
+		return [held if held >= 0 else cur, held if held >= 0 else cur, 0.0]
+
+	var mid := float(back) + (float(back + 1 + fwd) + 1.0) * 0.5
+	if mid > float(sample):
+		var t := 0.5 + 0.5 * (float(sample) - float(back)) / (mid - float(back))
+		return [frame_before, held, t]
+	var t2 := 0.5 * (float(sample) - mid) / (float(j) - mid)
+	return [held, frame_after, t2]
+
+
 func _punch_timer(f: Fight) -> int:
 	if f.punch_part == "" or not PUNCH_PART.has(f.punch_part):
 		return 0
@@ -2970,7 +3053,12 @@ func _pose(f: Fight) -> void:
 	# which does not typecheck as transcribed, and guessing at it is how the
 	# invented fraction got here in the first place. Hard-cutting everything
 	# is the safe half of the truth, not the whole of it.
-	f.node.set_pose(frames[idx], frames[idx], 0.0)
+	var sm := _smooth(f, frames[idx])
+	# `_pose_bones` uses Godot's lerp, where 0 yields the FIRST argument; the
+	# engine's `LerpVector3` is `a*t + b*(1-t)`, where 0 yields the second. So
+	# the pair goes in swapped rather than the factor being flipped, which
+	# keeps both ends readable against their own source.
+	f.node.set_pose(int(sm[1]), int(sm[0]), float(sm[2]))
 
 
 func _scene_x(f: Fight) -> float:
