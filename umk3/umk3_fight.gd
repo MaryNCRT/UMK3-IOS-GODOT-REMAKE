@@ -2868,6 +2868,18 @@ func tick() -> void:
 		if s.is_empty():
 			continue
 		var n: int = _frames_of(f).size()
+		# **The chain window holds the swing's last frame, it doesn't let the
+		# retraction start early.** `t_punch_sleep` is what `chain_left`
+		# models: while it's open the real thread sits parked on the swing's
+		# own last frame -- `do_next_a9_frame` is never called -- and only
+		# once it closes (chain_left reaches 0) does the retraction's own
+		# proc get pushed and the cursor move on. Letting `n` cover the
+		# whole part+tail while chain_left is still open is what let the
+		# retraction start the instant the swing ended, which is the frames
+		# `STRIKE_LIVE` says the real hit stays live for that the pose was
+		# skipping past.
+		if f.st == St.ATTACK and f.punch_part != "" and f.chain_left > 0:
+			n = (PUNCH_PART[f.punch_part]["f"] as Array).size()
 		if f.st == St.ATTACK and f.freeze > 0:
 			continue
 		var anim_loop: bool = s[1]
