@@ -1475,11 +1475,17 @@ func _move_frames(sid: int) -> int:
 
 
 ## The rate an attack plays at. -1 in the table means the engine never set one
-## and the fighter keeps what he had, which for a jab is the stance's.
-func _strike_rate(sid: int) -> int:
+## and the fighter keeps what he had -- 6 standing, 5 walking, whatever
+## `init_anirate` last left in `pl->0x1c` (see the block comment above
+## STRIKE_RATE). `f`, when given, is that fighter: pass it so a jab thrown
+## while walking plays at the walk's own rate instead of always falling back
+## to the stance's. Callers with no fighter in scope (the old flattened-stream
+## `_move_frames`, `_retract_rate`'s own fallback) keep the stance default,
+## same as before this was wired up.
+func _strike_rate(sid: int, f: Fight = null) -> int:
 	var r: int = int(STRIKE_RATE.get(sid, -1))
 	if r < 0:
-		r = RATE_STANCE
+		r = f.ani_rate if f != null else RATE_STANCE
 	return maxi(1, r + rate_bias)
 
 
@@ -1598,6 +1604,15 @@ static func _overlap(a: Array, b: Array) -> bool:
 func _start_attack(f: Fight, mv: int, dist: int) -> void:
 	f.st = St.ATTACK
 	f.move = mv
+	# **Seeded fresh, not carried over.** `was_airborne` only ever changes
+	# inside St.ATTACK's own think (see below), so a grounded attack thrown
+	# any time after an earlier AERIAL one found it still `true` from that
+	# last air strike -- and on this attack's very first tick, `true and not
+	# airborne` was already satisfied, so `_ground_after_air_strike` fired
+	# before a single frame of the new attack's animation ever showed. Hit
+	# detection ran fine off `f.strike`/`f.timer`, which is why the strike
+	# still connected while the pose never moved.
+	f.was_airborne = f.yi() < _ground_y()
 	f.strike = _resolve_strike(f, mv, dist, f.stick_away)
 	f.timer = _move_frames(f.strike) + _recovery_frames(f.strike)
 	f.timer_total = f.timer
@@ -1786,6 +1801,7 @@ func _ground_after_air_strike(f: Fight) -> void:
 	f.st = St.STANCE
 	f.table = BT_STANCE
 	f.move = MV_NONE
+	f.was_airborne = false
 
 
 ## The special the fighter just asked for, or an empty dictionary.
@@ -1829,9 +1845,19 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			# `_pressed_button`, which only fires on the frame a button goes
 			# DOWN, so a held block lasted two frames and could never be
 			# holding when a hit arrived.
-			f.vx = 0
+			#
+			# **Zeroed only once the shake's own loop ends, not every tick.**
+			# `t_block_shake` calls `stop_me_player` -- which is what zeroes
+			# the velocity -- exactly once, on the pass where its `a10` loop
+			# runs out; every tick before that the pushback `t_block3` gave
+			# him (`away_x_vel`, 2.0 in 16.16) is still live. Zeroing it every
+			# tick regardless, which is what this did before, cancelled that
+			# pushback the frame after it landed -- so a blocked hit never
+			# actually slid the blocker back.
 			if f.blk_shake > 0:
 				f.blk_shake -= 1
+				if f.blk_shake == 0:
+					f.vx = 0
 			if f.no_block:
 				f.st = St.STANCE
 				f.table = BT_STANCE
@@ -2294,7 +2320,7 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		# `pl->0x44` game frames, one check a frame. Not a fraction of the clip
 		# any more -- see STRIKE_LIVE.
 		var sid0 := _strike_now(a, b)
-		var live: int = int(STRIKE_LIVE.get(sid0, 3)) * maxi(1, _strike_rate(sid0))
+		var live: int = int(STRIKE_LIVE.get(sid0, 3)) * maxi(1, _strike_rate(sid0, a))
 		var elapsed := a.timer_total - a.timer
 		if elapsed > live:
 			return
@@ -2326,10 +2352,20 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 			b.health -= chip
 			b.st = St.BLOCK
 			b.table = BT_NULL
-			b.vx = 0
 			b.connected = false
 			# `t_blocked_start` -> `t_rst5`, and the judder of `t_block_shake`.
 			b.blk_shake = BLK_SHAKE
+			# **`t_block3`, the state the shake runs out of, is two more
+			# reactions than "stand there and judder."** `field48 = 0x40004`
+			# into `shake_a11` -- amplitude 4, the same {amp, amp} encoding as
+			# the uppercut's {6, 6} above -- fires the screen shake on every
+			# blocked hit, and `field1c = 0x20000` (2.0 in 16.16) into
+			# `away_x_vel` pushes the blocker back. Both were dropped on the
+			# floor entirely: this port zeroed the velocity instead of
+			# applying it, and never shook the screen for a block at all.
+			b.vx = int(2.0 * ONE) * away
+			shake = SHAKE_FRAMES
+			shake_amp = 4.0
 			if audio:
 				audio.block_hit(int(_Stk.BLOCK_IDX[sid]))
 			return
@@ -2869,7 +2905,7 @@ func _ani_for(f: Fight) -> Array:
 			return [ANI_SPEAR, RATE_PULL]
 		St.ATTACK:
 			if f.strike >= 0 and STRIKE_ANI.has(f.strike):
-				return [int(STRIKE_ANI[f.strike]), _strike_rate(f.strike)]
+				return [int(STRIKE_ANI[f.strike]), _strike_rate(f.strike, f)]
 			return [MOVE_ANI[f.move], -1]
 		St.HIT:
 			if f.react >= 0 and REACT_ANI.has(f.react) 					and f.table != BT_DUCK:
@@ -3018,7 +3054,7 @@ func _punch_timer(f: Fight) -> int:
 		return 0
 	var swing: int = (PUNCH_PART[f.punch_part]["f"] as Array).size()
 	var tail: int = _punch_tail(f).size()
-	return swing * maxi(1, _strike_rate(f.strike)) 		+ tail * _retract_rate(f.strike)
+	return swing * maxi(1, _strike_rate(f.strike, f)) 		+ tail * _retract_rate(f.strike)
 
 
 ## The retraction a punch swing falls out to: part 4 out of an A swing and
