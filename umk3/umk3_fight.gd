@@ -424,6 +424,21 @@ const REACT_ANI := {
 ## knockdown or a fall rather than a flinch.
 const KNOCKS_DOWN := [4, 8, 12, 45, 115]
 
+## **Most reactions inherit their rate; `t_r_hi_kick` does not, and this is
+## the one case read so far.** `t_r_hi_kick` (0x00045410) plays SCHIHIT the
+## same way every other non-knockdown reaction does -- `field40 = 0x1c`,
+## `get_char_ani` -- but then sets `field1c = 4` before handing to
+## `t_mframew`, and `t_mframew` (other.c, `obj->field1c` -> `thread->fieldfc`,
+## commented "wait this animation's rate") is what actually turns that into a
+## sleep. `t_r_hi_punch`, `t_r_duck_kickh/kickl`, `t_r_duck_punch` and
+## `t_r_flip_punch` were all read the same way and none of them touch
+## `field1c` between `get_char_ani` and their own push -- they inherit
+## whatever the fighter was already playing at, same as a jab. Missing keys
+## fall back to -1 (inherit) in `_ani_for`.
+const REACT_RATE := {
+	0: 4,        # t_r_hi_kick, measured -- see the banner above
+}
+
 ## **The collapse at the end of a round**, from `t_collapse_on_ground`
 ## (0x0007d294), which is the whole of what the loser does:
 ##
@@ -443,8 +458,21 @@ const DEAD_ADJUST := [
 ]
 const COLLAPSE_HOLD := 0x12              ## measured, obj->0x64
 
-## `_getup_speeds` (0x001671a4) is 0x40004 for every character: four and four,
-## packed the way the walk table packs a rate and a speed.
+## **Re-checked with the right stride, and 4 holds up -- with a loose end.**
+## `_getup_speeds` (0x001671a4), read as 8-byte {rate, speed} pairs the way
+## `_walk_forward_info` packs its own table: the first SIX characters all
+## read `0x00040004` -- rate 4, speed 4 -- exactly what this constant already
+## says. Reading it as 4-byte entries first (no speed half) instead of 8
+## made Scorpion's own slot look like noise; it was the wrong stride, not a
+## wrong value here.
+##
+## `gup2` (mkreact.c) only stores the table's ADDRESS into `obj->field48`;
+## nothing decompiled yet reads it back indexed by character, so it is not
+## confirmed that character number indexes this table directly rather than
+## through some other lookup -- past the sixth entry the numbers stop
+## looking like small rates at all, which is the open end. Scorpion is
+## character 18, past where the pattern holds. Worth another pass once
+## whatever reads `field48` back is decompiled.
 const RATE_GETUP := 4
 
 ## **The fall, from `t_fall_on_my_back` (0x00041efc).** Four stores and a
@@ -2909,7 +2937,7 @@ func _ani_for(f: Fight) -> Array:
 			return [MOVE_ANI[f.move], -1]
 		St.HIT:
 			if f.react >= 0 and REACT_ANI.has(f.react) 					and f.table != BT_DUCK:
-				return [int(REACT_ANI[f.react]), -1]
+				return [int(REACT_ANI[f.react]), int(REACT_RATE.get(f.react, -1))]
 			return [ANI_DUCK_HIT if f.table == BT_DUCK else ANI_HIT, -1]
 		St.FALLING:
 			return [ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN, -1]
