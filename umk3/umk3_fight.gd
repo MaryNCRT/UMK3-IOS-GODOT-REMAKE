@@ -820,15 +820,33 @@ const MOVE_ANI := [
 ##     walk     5   the other half of the walk table, per character
 ##     run      3   `run_setup` (0x00030fbc)
 ##
-## A punch sets NO rate: `t_joy_hi_punch` writes `field40 = 0xe`, calls
-## `get_char_ani` and never touches `init_anirate`. It plays at whatever the
-## fighter was already on -- 6 standing, 5 walking. That is not a quirk to
-## correct, it is the behaviour, so this reproduces it: the attack states pass
-## the CURRENT rate rather than one of their own.
+## **Wrong for a session and a half: a punch DOES set a rate, just not
+## through `init_anirate`.** `t_joy_hi_punch` itself writes `field40 = 0xe`,
+## calls `get_char_ani` and never touches `init_anirate` -- that part was
+## always true, and it is exactly where the previous reading stopped. It
+## does not swing the arm; it only arms the clip and pushes `t_jhp4`, and
+## `t_jhp4` (0x00030d68) is where the swing actually happens:
 ##
-## This replaces a number chosen from the distribution of `init_anirate`
-## literals across the whole binary. That distribution was a fair guess and it
-## was a guess; 6 and the inheritance are what the code does.
+##     stop_me_player-ish setup, rsnd_func(obj, 0xe)   the whoosh
+##     obj->field1c = 3
+##     push t_act_mframew -> t_mframew
+##
+## `t_mframew` (other.c, already decompiled) reads `obj->field1c` straight
+## back out as the sleep -- `thread->fieldfc = obj->field1c` -- with no
+## `init_anirate` in between, which is the second, unrelated way this engine
+## sets a rate. `t_jhp5`, `t_jmp4` and `t_jmp5` all do the identical thing
+## with the identical 3. So the swing's own rate is 3 for both punches,
+## every time, never inherited -- register-for-register the same shape
+## `t_do_block_hi` below uses for the block, which is why the block's own
+## reading below already called its `field1c = 3` "the anirate" and got it
+## right; the punch reading just never followed the push far enough to see
+## the same pattern.
+##
+## Cost of the miss: `_strike_rate` fell back to whatever the fighter's OWN
+## `ani_rate` already was (6 standing, 5 walking) for want of a table entry,
+## which is slower than the real 3 either way -- a jab thrown standing still
+## played at double the real interval per frame. See `STRIKE_RATE` below,
+## which now carries 3 for both punches instead of -1.
 ## **The block, measured end to end.**
 ##
 ## `t_do_block_hi` (0x0004cea0) is four lines: `stop_me_player`, animation
@@ -964,9 +982,18 @@ const STRIKE_RETRACT := {
 	_Stk.HIKICK: 3, _Stk.LOKICK: 3, _Stk.UPPERCUT: 4,
 }
 
-const STRIKE_RECOVERY := {
-	_Stk.HI_PUNCH: 19,
-}
+## **Removed -- `HI_PUNCH: 19` had no citation and the traced chain has no
+## room for it.** `t_joy_hi_punch` -> `t_jhp4` (swing, 3 frames at rate 3) ->
+## `t_punch_sleep` (the chain window, `STRIKE_LIVE` already covers this) ->
+## on a miss, `t_unhip1` (retract at `PUNCH_RETRACT_RATE`, the H4 tail, 2
+## frames) -> `t_retract_strike_act` -> `t_act_mframew` -> `t_mframew` -> on
+## the way out, `t_ret9` (`back_to_normal`, unwinds the same frame, no sleep
+## at all). Nothing in that chain sits idle for 19 extra frames after the
+## clip is done, and every other strike in this file reads 0 here by
+## omission. 19 frames at rate 1 is nearly a third of a second added to
+## every jab's own total -- exactly the kind of thing that would make "the
+## whole cycle" of a punch feel dragged out, which is what got reported.
+const STRIKE_RECOVERY := {}
 
 ## **A connected kick freezes.** `t_kick2` state 0x31a: if `pl->0x5c` came back
 ## non-zero -- the strike hit something -- it sets `task->0xfc = 0xc` and waits
@@ -975,7 +1002,11 @@ const STRIKE_RECOVERY := {
 const HIT_FREEZE := 12
 
 const STRIKE_RATE := {
-	_Stk.HIKICK: 1, _Stk.LOKICK: 1, _Stk.HI_PUNCH: -1, _Stk.LO_PUNCH: -1,
+	_Stk.HIKICK: 1, _Stk.LOKICK: 1,
+	# `t_jhp4`/`t_jhp5`/`t_jmp4`/`t_jmp5` all set `field1c = 3` before
+	# `t_act_mframew` -- verified, not inherited. See the block comment above
+	# STRIKE_RATE's own const block for how this was misread the first time.
+	_Stk.HI_PUNCH: 3, _Stk.LO_PUNCH: 3,
 	_Stk.SWEEP: 3, _Stk.DUCK_PUNCH: 3, _Stk.DUCK_KICKH: 3,
 	_Stk.DUCK_KICKL: 2, _Stk.UPPERCUT: 2, _Stk.JUMP_PUNCH: 9,
 	_Stk.JUMP_KICK: 10, _Stk.FLIP_KICK: 11, _Stk.FLIP_PUNCH: 12,
