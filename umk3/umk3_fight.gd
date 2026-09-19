@@ -582,6 +582,11 @@ const UPCUT_G := 0x5800                  ## measured, 0.34375
 const FALL_VX := {
 	8: UPCUT_VX,     # t_r_uppercut -> t_rup3
 	11: int(3.0 * ONE),                  # t_r_flip_punch, the airpunch family
+	# `t_r_slide` (0x00046010, mkreact.c), token 0x45a: `field1c = 0x30000`
+	# (3.0) into `away_x_vel` before the knockdown, the same magnitude as
+	# t_r_airpunch above. Missing here meant a slide knockdown launched
+	# with NO horizontal push at all, which is not what the binary does.
+	45: int(3.0 * ONE),                  # t_r_slide
 }
 
 ## **Where the body comes to rest, and the one place this leaves the streams.**
