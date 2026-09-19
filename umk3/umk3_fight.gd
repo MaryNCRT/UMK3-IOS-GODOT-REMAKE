@@ -23,14 +23,15 @@
 ## would send the next reader hunting for tables that have already been
 ## found.
 ##
-## What is still genuinely chosen, and marked so at its own definition
-## rather than blanket-claimed here: the ducking and airborne body box
-## (`DUCK_BOX_TOP`/`DUCK_BOX_H`/`AIR_BOX_INSET` -- the real per-frame box is
-## filled at RUNTIME by logic not yet located, see `BOX_W`'s own note), and
-## the round-intro timing (`ROUND_BANNER_FRAMES` and friends).
+## The ducking and airborne body box was the last thing on that list, and
+## it has been read too since: `DUCK_BOX` and `JUMP_BOX` are Scorpion's own
+## boxes for those poses, pulled from `_FrameInfo`/`_FrameInfo2` the same
+## way the standing one was (see `BOX_W`'s own note). What is still
+## genuinely chosen, and marked so at its own definition: the round-intro
+## timing (`ROUND_BANNER_FRAMES` and friends).
 ##
-## The arena, the floor, the STANDING hitbox, the input contract and the
-## physics are all out of the binary and marked so at their own definitions.
+## The arena, the floor, the hitbox, the input contract and the physics are
+## all out of the binary and marked so at their own definitions.
 ##
 ## ## No game data ships here
 extends Node3D
@@ -96,32 +97,52 @@ const FLOOR_Y := ROUNDPARAM_GROUND + 0xf7              #  247
 ##
 ##     left, top, width, height      right = left + width, bottom = top + height
 ##
-## and the table is **almost entirely zero in the binary**: 27 of 7,168 entries.
-## The rest is filled at run time. What ships is three nine-frame runs, and nine
-## frames is a stance:
+## and `_FrameInfo2` is **almost entirely zero in the binary**: 27 of 7,168
+## entries. **This used to say the rest is "filled at run time," and that was
+## wrong** -- `FrameID_GetBBox` itself says what actually happens: when
+## `_FrameInfo2[fid].h == 0` it falls back to a SECOND static table,
+## `_FrameInfo` (0x0010df1c, same 16-byte layout), not to anything computed.
+## That table was never read before. It is not sparse the way `_FrameInfo2`
+## is.
 ##
-##     Kabal            left -20  top 9   54 x 135
-##     Sub-Zero         left -18  top 8   56 x 128
-##     Kitana/Jade/Mileena  left -29  top 6   55 x 130
+## **So Scorpion's own boxes were sitting in the binary the whole time**, one
+## read away. `SCORPIONFRAMES.bin` maps his LOCAL frame numbers to the GLOBAL
+## ids `_FrameInfo`/`_FrameInfo2` are indexed by (`docs/ANIMATION-STREAMS.md`
+## has the mechanism); reading `_FrameInfo` at those ids for the stance
+## (local 216, global 351), the settled duck (local 22, global 2465) and all
+## three frames of the jump (local 94/95/96, global 178/180/183) gives:
 ##
-## **So a fighter's box is about 55 wide and 130 tall**, not 72 tall. Against
-## `_ochar_ground_offsets` -- Kabal 148, Sub-Zero 142, the kunoichi 139 -- the
-## box is 90 to 93 per cent of the character's height.
+##     stance   left -27  top 5   63 x 129
+##     duck     left -22  top 62  64 x 71
+##     jump 1   left -19  top 27  60 x 107   -- crouched at liftoff
+##     jump 2   left -24  top -6  68 x 139   -- extended, rising
+##     jump 3   left -26  top -9  70 x 96    -- tucked, at the apex
 ##
-## Scorpion's own rows are zero, so this uses the kunoichi's: they are the same
-## 139 units tall and the same build. That is a stand-in, and a much closer one
-## than a number belonging to a single patched animation.
-const BOX_LEFT := -29
-const BOX_TOP := 6
-const BOX_W := 55
-const BOX_H := 130
+## The stance box landing three units from the Kitana/Jade/Mileena stand-in
+## this replaces is the confirmation the read is right, not a coincidence --
+## and the jump boxes explain the reported bug exactly: frame 2 is TALLER
+## than standing and frame 3 is WIDER and SHORTER, a curled silhouette, which
+## a box that only ever shrinks by a fixed inset can never produce.
+const BOX_LEFT := -27
+const BOX_TOP := 5
+const BOX_W := 63
+const BOX_H := 129
 
-## The ducking and airborne body box. **CHOSEN, not measured** -- see
-## `_body_box`'s own note on why a shape is used here rather than the
-## standing box glued to every pose.
-const DUCK_BOX_TOP := BOX_TOP + BOX_H / 2
-const DUCK_BOX_H := BOX_H - BOX_H / 2
-const AIR_BOX_INSET := 10
+## The settled duck box (local frame 22, the last of `SCDUCK`'s three and the
+## one held for as long as DOWN stays pressed). Measured, not chosen -- see
+## BOX_W's own note.
+const DUCK_BOX := [-22, 62, 64, 71]           ## x, y, w, h
+
+## All three of `SCJUMP`'s frames, in display order, each a real box read the
+## same way DUCK_BOX was. Measured, not chosen -- see BOX_W's own note.
+## `_body_box` picks the one matching the jump's current animation index, so
+## a fighter's hurtbox actually follows the crouch-extend-tuck the jump
+## clip's three frames show instead of one shape glued on for the whole arc.
+const JUMP_BOX := [
+	[-19, 27, 60, 107],
+	[-24, -6, 68, 139],
+	[-26, -9, 70, 96],
+]
 
 ## The ten input bits. **This is the whole input contract** -- proved three
 ## ways, in the block at the top of decomp/gamecode/logic/joy.c.
@@ -1739,37 +1760,41 @@ func _strike_box(f: Fight, stk: Array) -> Array:
 	return [x0, y0, x0 + int(stk[STK_W]), y0 + int(stk[STK_H])]
 
 
-## A fighter's own body box, from `_FrameInfo2`. See BOX_W.
+## A fighter's own body box, from `_FrameInfo`/`_FrameInfo2`. See BOX_W.
 ##
 ## **Was the same box, rigidly, whether standing, ducking or airborne.**
-## BOX_W/BOX_H/BOX_TOP/BOX_LEFT are the STANCE box -- `_FrameInfo2` names it
-## per GLOBAL FRAME, and the real engine reads a different one for a
-## different pose. That per-frame table is filled at runtime for frames
-## whose static entry is zero (see BOX_W's own note); the fill logic has
-## not been located, so there is no decompiled duck or jump box to read
-## yet. Gluing the standing box to a ducking fighter regardless meant a
-## high attack aimed at head height still connected under a duck, because
-## the hurtbox never moved down to where the head actually went.
+## BOX_W/BOX_H/BOX_TOP/BOX_LEFT are the STANCE box; ducking and jumping now
+## read Scorpion's own real boxes for those poses (DUCK_BOX/JUMP_BOX, see
+## BOX_W's own note on where they came from) instead of a shape guessed at
+## the standing box's expense. Gluing the standing box to a ducking fighter
+## regardless meant a high attack aimed at head height still connected
+## under a duck, because the hurtbox never moved down to where the head
+## actually went -- and gluing it to a jumping one meant the box stayed
+## tall and narrow through a jump that is, at its own apex, wider than it
+## is standing and shorter than half its height.
 ##
-## CHOSEN, not measured, until the real per-frame table is read:
-## ducking keeps the feet where they are and collapses the top down to
-## half of BOX_H, which is the shape every 2D fighter's crouch hurtbox
-## takes even where the exact fraction differs. Airborne pulls the box in
-## from every side by AIR_BOX_INSET, since a jump curls the silhouette in
-## rather than just sliding a full-height box up with it.
+## `JUMP_BOX` is picked by `f.ani_index`, the same index that already
+## selects which of `SCJUMP`'s three frames is on screen, so the box tracks
+## the crouch-extend-tuck the animation itself shows rather than one
+## in-between shape for the whole arc. Clamped, since an aerial ATTACK
+## reuses `f.ani_index` for its own clip and this is closer than the
+## standing box even when the index does not line up with a jump frame.
 func _body_box(f: Fight) -> Array:
-	var top := BOX_TOP
-	var h := BOX_H
 	var left := BOX_LEFT
+	var top := BOX_TOP
 	var w := BOX_W
+	var h := BOX_H
 	if f.table == BT_DUCK:
-		top = DUCK_BOX_TOP
-		h = DUCK_BOX_H
+		left = DUCK_BOX[0]
+		top = DUCK_BOX[1]
+		w = DUCK_BOX[2]
+		h = DUCK_BOX[3]
 	elif f.yi() < _ground_y():
-		top += AIR_BOX_INSET
-		h -= AIR_BOX_INSET * 2
-		left += AIR_BOX_INSET
-		w -= AIR_BOX_INSET * 2
+		var jb: Array = JUMP_BOX[clampi(f.ani_index, 0, JUMP_BOX.size() - 1)]
+		left = jb[0]
+		top = jb[1]
+		w = jb[2]
+		h = jb[3]
 	var x0: int = f.xi() + left
 	var y0: int = f.yi() + top
 	return [x0, y0, x0 + w, y0 + h]
