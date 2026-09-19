@@ -3766,12 +3766,23 @@ func _draw_boxes() -> void:
 
 	for i in fighters.size():
 		var f := fighters[i]
-		# The engine's y is the TOP of the box and grows DOWNWARD, so the box
-		# hangs from `y` toward the floor.
-		var x := float(f.xi() + BOX_LEFT) * scale_units
-		var top := float(FLOOR_Y - f.yi() - BOX_TOP) * scale_units
-		var bot := top - float(BOX_H) * scale_units
-		var w := float(BOX_W) * scale_units
+		# **Drawn from `_body_box`, not from BOX_W/BOX_H/BOX_TOP/BOX_LEFT
+		# directly.** This used to duplicate that math with the STANCE
+		# constants regardless of pose, so the debug view kept showing a
+		# full-height standing box glued to a ducking or airborne fighter
+		# even after `_body_box` itself learned to shrink for both -- the
+		# hit test was already fixed and the picture of it was not. Same
+		# principle the strike box below already followed: a box that is
+		# drawn and a box that hits must come from the same call or they
+		# drift apart.
+		#
+		# The engine's y is the TOP of the box and grows DOWNWARD, so the
+		# box hangs from `y` toward the floor.
+		var box := _body_box(f)
+		var x := float(box[0]) * scale_units
+		var top := float(FLOOR_Y - box[1]) * scale_units
+		var bot := float(FLOOR_Y - box[3]) * scale_units
+		var w := float(box[2] - box[0]) * scale_units
 		_boxes[i * 2].mesh = _wire_box(x, bot, x + w, top,
 			Color(0.2, 1.0, 0.3) if f.st != St.HIT else Color(1.0, 0.3, 0.2))
 		_boxes[i * 2].visible = true
