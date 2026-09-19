@@ -1141,9 +1141,21 @@ const STRIKE_LIVE := {
 ## made of. Sweep's hit/miss difference is one frame at rate 5 vs 6; using
 ## the miss value (5) here since that is the plain, unconditional case and
 ## the gap is a single tick either way.
+##
+## **The two duck kicks push `t_retract_strike` from OUTSIDE `t_stat_do_*`,
+## in their own joystick dispatcher.** `t_joy_duck_kickh` (joy.c 0x0002ee78)
+## sets `field1c = 4` before the push -- its own comment: "neither the
+## swing's rate nor the standing kicks' 3." `t_joy_duck_kickl` (0x0002fc5c)
+## sets 2 (or park 6/10 first depending on `is_he_joy`, which does not
+## change the retract rate itself). `t_joy_duck_punch`'s own comment says
+## it plainly -- "no retraction state -- the duck punch's own proc does
+## all of that" -- so DUCK_PUNCH's tail is the animation's natural
+## continuation into SCDUCKPUNCH's own part 2, not a second explicit rate;
+## not added here without tracing that rate too.
 const STRIKE_RETRACT := {
 	_Stk.HIKICK: 3, _Stk.LOKICK: 3, _Stk.UPPERCUT: 4,
 	_Stk.KNEE: 6, _Stk.ELBOW: 3, _Stk.ROUNDH: 4, _Stk.SWEEP: 5,
+	_Stk.DUCK_KICKH: 4, _Stk.DUCK_KICKL: 2,
 }
 
 ## **Removed -- `HI_PUNCH: 19` had no citation and the traced chain has no
