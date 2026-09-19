@@ -2012,7 +2012,30 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.timer_total = f.timer
 			return
 		St.GETUP:
+			# `gup2` (0x00044254), transcribed -- for the joystick path only.
+			# The AI branch (`t_d_getup`, still not decompiled) never runs
+			# here, because every fighter in this port reads real input.
+			#
+			# Holding DOWN through most of the getup skips straight to
+			# staying crouched: `t_getup_stay_ducked` (holding it from the
+			# very first frame) and `t_joy_getup_abort` (pressing it mid-clip)
+			# are the same wake-up option from two entry points, and both
+			# land the fighter in the ordinary joystick dispatch rather than
+			# finishing the stand-up animation. That option did not exist
+			# with the flat timer this replaces.
+			#
+			# CHOSEN: the binary refuses the abort in the LAST stretch of the
+			# clip, gated on `obj->a10 == 0x17`, so a fighter cannot flicker
+			# duck/getup on the final frames. `a10` is reused for several
+			# different things inside `gup2` and which one is live at that
+			# point in the clip is not pinned down yet, so this uses "the
+			# last fifth of the clip" as the SHAPE of that gate -- early
+			# cancel, late commit -- without claiming its exact frame.
 			f.vx = 0
+			if f.timer > f.timer_total / 5 and (raw & IN_DOWN):
+				f.st = St.DUCK
+				f.table = BT_DUCK
+				return
 			if f.timer == 0:
 				f.st = St.STANCE
 				f.table = BT_STANCE
