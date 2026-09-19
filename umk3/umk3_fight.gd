@@ -1244,6 +1244,16 @@ class Fight extends RefCounted:
 	## since this fighter last returned to normal. Feeds the corner-trap
 	## mercy rule; see `CORNER_TRAP_HITS`.
 	var p_hit := 0
+	## `field54` (MK3OBJPROC -- `add_combo_damage`): damage taken in the same
+	## string p_hit counts. Godot's `health` is already 0-100, the same
+	## scale the binary gets to with `field54 * 100 / 166`, so no rescale
+	## is needed here. See `back_to_normal_px`'s own note in mkreact.c/other.c.
+	var combo_dmg := 0
+	## The last finished combo, reported the instant `back_to_normal_px`
+	## would fire (`p_hit > 1` -- a string, not one blow) and held until the
+	## next one. Nothing reads these yet; they exist so a HUD/announcer can.
+	var last_combo_hits := 0
+	var last_combo_pct := 0
 	var prev_buttons := 0
 	## Which of those bits went down this frame -- `swscan`'s press set.
 	var went := 0
@@ -1583,6 +1593,9 @@ func reset() -> void:
 		f.ani_index = 0
 		f.react = -1
 		f.p_hit = 0
+		f.combo_dmg = 0
+		f.last_combo_hits = 0
+		f.last_combo_pct = 0
 		f.collapsed = false
 		f.dying = false
 		f.ani_dir = 1
@@ -2203,7 +2216,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			if f.timer == 0:
 				f.st = St.STANCE
 				f.table = BT_STANCE
-				f.p_hit = 0     # zero_my_p_hit, back to normal
+				_back_to_normal(f)
 			return
 		St.FALLING:
 			# **It ends when the CLIP does**, and that is the fix for a
@@ -2308,7 +2321,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.st = St.STANCE
 				f.table = BT_STANCE
 				f.react = -1
-				f.p_hit = 0     # zero_my_p_hit, back to normal
+				_back_to_normal(f)
 			return
 		St.DEAD, St.VICTORY:
 			# The round is over. Neither of them does anything else.
@@ -2751,6 +2764,7 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 			return
 
 	b.health -= dmg
+	b.combo_dmg += dmg      # add_combo_damage, same string p_hit counts
 	# `reaction_start_chores` (0x00044b0c) turns the victim to face whoever hit
 	# him and stops him dead before the reaction's own velocity is applied.
 	b.facing = 1 if a.xi() >= b.xi() else -1
@@ -2874,6 +2888,21 @@ func _is_he_blocking(b: Fight, stk: Array) -> bool:
 ## them knocked down unconditionally (115) or never (the other six) before
 ## this was traced.
 const KNOCKS_DOWN_IF_AIRBORNE := [0, 1, 6, 9, 11, 76, 115]
+
+## `back_to_normal_px(obj, obj)` -- the common self-report/self-reset call
+## (other.c 0x00055... via `back_to_normal`). Read whole before writing this:
+## `p_hit` and the damage total both live on the fighter who WAS hit (traced
+## through `add_combo_damage`'s triple dereference -- the attacker's own
+## call lands the increment on the victim's proc, the same one `inc_p_hit`
+## bumps), so the report and the reset are the same object, no cross-fighter
+## bookkeeping needed. The binary gates the report on `p_hit > 1` -- a
+## string, not one blow -- and this does too.
+func _back_to_normal(f: Fight) -> void:
+	if f.p_hit > 1:
+		f.last_combo_hits = f.p_hit
+		f.last_combo_pct = f.combo_dmg
+	f.p_hit = 0
+	f.combo_dmg = 0
 
 func _take_reaction(f: Fight, react: int, away := 1, airborne := false) -> void:
 	f.react = react
