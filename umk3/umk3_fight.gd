@@ -874,6 +874,13 @@ const PUNCH_PART := {
 	"L7": {"f": [139, 84, 82], "next": "H2", "own": "H"},    # mth2 -> t_jhp4
 }
 
+## H1 and L1 -- the fist reaching for the target, before `t_jhp4`/`t_jmp4`
+## ever call `punch_strike_check` the first time -- are three frames each.
+## `t_act_mframew` pushes `t_mframew`, and `t_mframew` is the whole of "run an
+## animation to completion" in this engine: `do_next_a9_frame` once a tick
+## until the part's own stream runs out. See `_resolve_hits`'s own note.
+const PUNCH_EXTEND := 3
+
 ## `t_unhip1` sets `pl->0x1c = 2` before it plays, so both punches retract at
 ## rate 2 whichever swing they came out of.
 const PUNCH_RETRACT_RATE := 2
@@ -1919,6 +1926,19 @@ func _start_attack(f: Fight, mv: int, dist: int) -> void:
 		# The cursor decides the length now, not the flattened stream.
 		f.timer = _punch_timer(f) + _recovery_frames(f.strike)
 		f.timer_total = f.timer
+		# **The swing has to survive its own check window.** `t_punch_sleep`
+		# holds the retraction back -- never pushes it -- for as long as the
+		# window in `_resolve_hits` is open (`PUNCH_EXTEND` to reach the
+		# extended pose, then `STRIKE_LIVE` more). `_punch_timer`'s swing+tail
+		# frame count was only ever long enough to cover the OLD elapsed-0
+		# window; extend it so the real one isn't cut short by the timer
+		# reaching 0 and retracting mid-check.
+		var hold: int = (PUNCH_EXTEND + int(STRIKE_LIVE.get(f.strike, 0))) \
+			* maxi(1, _strike_rate(f.strike, f))
+		if f.timer_total < hold:
+			var extra := hold - f.timer_total
+			f.timer += extra
+			f.timer_total += extra
 	if audio:
 		# `t_stat_do_hi_kick`, `t_stat_do_uppercut` and `_sweep_sounds` are the
 		# three that take `big_whoosh`; the punches and the flips take
@@ -1994,6 +2014,15 @@ func _chain_punch(f: Fight, other: Fight, raw: int) -> bool:
 	if f.chain_left <= 0:
 		return false
 	if f.strike != _Stk.HI_PUNCH and f.strike != _Stk.LO_PUNCH:
+		return false
+	# **Same PUNCH_EXTEND gate `_resolve_hits` opens its own window on.**
+	# `t_punch_sleep`'s `a10` is one counter doing both jobs in the binary --
+	# holding the pose AND re-checking the hit -- so the two have to open at
+	# the same tick or the pose starts retracting while the hit window is
+	# still (or not yet) live. Before the extend finishes, the window hasn't
+	# started: hold here without spending it.
+	var elapsed := f.timer_total - f.timer
+	if elapsed < PUNCH_EXTEND * maxi(1, _strike_rate(f.strike, f)):
 		return false
 	f.chain_left -= 1
 	var b := _pressed_button(f, raw)
@@ -2683,11 +2712,19 @@ func _raise_turbo() -> void:
 ## field48 is non-negative." `punch_strike_check` sets field48 to -1 the
 ## instant it connects, so the real shape is: test every frame from the
 ## extension pose onward, for up to STRIKE_LIVE frames, stop at the first
-## hit. That is exactly what `elapsed > live: return` below already does --
-## a first reading of `t_jhp4` alone (which only shows the one call) would
-## have said this was a single-frame check and made it too strict; reading
-## `t_punch_sleep` too is what settles it as the multi-frame window this
-## already is.
+## hit.
+##
+## **"Extension pose onward" was only ever true in this comment, not in the
+## code below it.** `elapsed > live` counted from `a.timer_total`, which is
+## the swing's own FIRST tick -- before `t_act_mframew`/`t_mframew` have
+## played a single frame of the extend part (H1/L1, three frames each in
+## `PUNCH_PART`). `t_jhp4`'s FIRST call to `punch_strike_check` happens only
+## after that part's own animation stream runs out (token 0x744, reached
+## from `t_act_mframew`'s unwind) -- so the real window opens `PUNCH_EXTEND`
+## frames late, not at elapsed 0. Checking from 0 meant a jab already
+## overlapping at the moment the button was pressed connected before the
+## fist had moved at all -- the hit landing before its own connecting pose
+## ever showed, which is what this looked like from the outside.
 func _resolve_hits(a: Fight, b: Fight) -> void:
 	if a.connected:
 		return
@@ -2713,9 +2750,18 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		# `pl->0x44` game frames, one check a frame. Not a fraction of the clip
 		# any more -- see STRIKE_LIVE.
 		var sid0 := _strike_now(a, b)
-		var live: int = int(STRIKE_LIVE.get(sid0, 3)) * maxi(1, _strike_rate(sid0, a))
+		var rate := maxi(1, _strike_rate(sid0, a))
+		var live: int = int(STRIKE_LIVE.get(sid0, 3)) * rate
 		var elapsed := a.timer_total - a.timer
-		if elapsed > live:
+		# **The two punches open their window late, not at elapsed 0.**
+		# `t_jhp4`/`t_jmp4` don't call `punch_strike_check` until the extend
+		# part (H1/L1, PUNCH_EXTEND frames) has already played in full -- see
+		# this function's own banner. Every other strike's window (`t_attk2`)
+		# really does start at elapsed 0, confirmed separately.
+		var open_at := 0
+		if sid0 == _Stk.HI_PUNCH or sid0 == _Stk.LO_PUNCH:
+			open_at = PUNCH_EXTEND * rate
+		if elapsed < open_at or elapsed > open_at + live:
 			return
 	if not _overlap(_strike_box(a, stk), _body_box(b)):
 		return
