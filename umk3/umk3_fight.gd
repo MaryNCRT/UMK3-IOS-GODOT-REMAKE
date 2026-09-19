@@ -424,6 +424,17 @@ const ANI_STANCE := 0
 const ANI_WALK_F := 1
 const ANI_WALK_B := 2
 const ANI_TURN := 3
+## **Turning round while crouched does not stand you up.** `t_joyd4`
+## (joy.c 0x0002fad4, the crouch's own two-frame heartbeat) checks
+## `am_i_facing_him` every cycle it holds down, and on a miss pushes
+## `t_duck_turnaround` (other.c 0x000559cc, animation 5 at rate 2) rather
+## than the standing `t_turn_around` -- the fighter "comes back to t_joyd3,
+## still down," per that function's own comment. The clip is already in
+## `umk3_scorpion_ani.gd` ([39, 40, 39, 22], generated from the real
+## stream) but nothing played it: the auto-turn trigger below had no
+## St.DUCK case at all, so crossing sides while crouched stood the
+## fighter up through the ordinary ANI_TURN instead.
+const ANI_DUCK_TURN := 5
 const ANI_DUCK := 4
 const ANI_DUCK_HIT := 7
 const ANI_DUCK_BLOCK := 6                ## SCDUCKBLOCK, `t_do_duck_block`
@@ -1306,6 +1317,10 @@ class Fight extends RefCounted:
 	var last_combo_hits := 0
 	var last_combo_pct := 0
 	var combo_serial := 0
+	## Set for the length of a St.TURN entered from St.DUCK -- `t_joyd4`'s
+	## own `t_duck_turnaround` branch -- so the turn plays ANI_DUCK_TURN and
+	## comes back to St.DUCK/BT_DUCK, not the standing ANI_TURN/St.STANCE.
+	var turn_from_duck := false
 	var prev_buttons := 0
 	## Which of those bits went down this frame -- `swscan`'s press set.
 	var went := 0
@@ -1649,6 +1664,7 @@ func reset() -> void:
 		f.last_combo_hits = 0
 		f.combo_serial = 0
 		f.last_combo_pct = 0
+		f.turn_from_duck = false
 		f.collapsed = false
 		f.dying = false
 		f.ani_dir = 1
@@ -2227,10 +2243,15 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		var want_facing := 1 if other.xi() >= f.xi() else -1
 		if want_facing != f.facing:
 			f.facing = want_facing
+			# `t_joyd4`'s own branch: crouched stays crouched through the
+			# turn (`ANI_DUCK_TURN`, back to St.DUCK), everyone else gets
+			# the standing `t_turn_around` (`ANI_TURN`, back to St.STANCE).
+			f.turn_from_duck = (f.st == St.DUCK)
 			f.st = St.TURN
 			f.table = BT_NULL
 			f.vx = 0
-			f.timer = _ani_length(ANI_TURN, 2)
+			f.timer = _ani_length(
+				ANI_DUCK_TURN if f.turn_from_duck else ANI_TURN, 2)
 			f.timer_total = f.timer
 
 	var dir_f := IN_RIGHT if f.facing > 0 else IN_LEFT
@@ -2303,8 +2324,12 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		St.TURN:
 			f.vx = 0
 			if f.timer == 0:
-				f.st = St.STANCE
-				f.table = BT_STANCE
+				if f.turn_from_duck:
+					f.st = St.DUCK
+					f.table = BT_DUCK
+				else:
+					f.st = St.STANCE
+					f.table = BT_STANCE
 			return
 		St.HIT:
 			if f.timer == 0:
@@ -3688,8 +3713,9 @@ func _ani_for(f: Fight) -> Array:
 			# `t_turn_around` sets `field1c = 2` before pushing `t_mframew`,
 			# which is the engine's own "wait this animation's rate" slot --
 			# not a guess, the same field other reactions' own rates come
-			# from (see REACT_RATE's banner).
-			return [ANI_TURN, 2]
+			# from (see REACT_RATE's banner). `t_duck_turnaround` sets the
+			# same 2 -- see ANI_DUCK_TURN's own note.
+			return [ANI_DUCK_TURN if f.turn_from_duck else ANI_TURN, 2]
 	if f.health == 0:
 		return [ANI_VICTORY, -1]
 	# Standing is the one that sets it, and everything else lives off that.
