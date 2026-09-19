@@ -2694,6 +2694,25 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 		# Straight up and angled are DIFFERENT TABLES -- which is why the
 		# engine ships both bt_jump and bt_angle_jump.
 		f.table = BT_ANGLE_JUMP if (raw & (dir_f | dir_b)) else BT_JUMP
+		if f.table == BT_JUMP:
+			# **`t_do_jump_up` never shows SCJUMP1.** `get_char_ani(obj)`
+			# resolves the animation id to a stream pointer and does nothing
+			# else -- no frame is displayed by that call -- and the very
+			# next line is `obj->field40 += 4`, skipping the stream's first
+			# word before `t_flight_call`'s `do_next_a9_frame` ever runs.
+			# The comment there says why: "the first frame belongs to the
+			# take-off, not the arc." So the straight jump's own clip is
+			# really SCJUMP2/3 (95/96), not all three -- pre-seed the cursor
+			# past frame 0 (94, SCJUMP1) so `set_ani` (same `ani` id, so its
+			# own index reset is skipped) never shows it either.
+			f.ani = ANI_JUMP
+			f.ani_index = 1
+			f.ani_count = 1
+			f.ani_dir = 1
+			# `set_ani`'s own `if id == ani: return` guard would otherwise
+			# skip this because `ani` is already `ANI_JUMP` from the line
+			# above -- set the rate by hand for the same reason.
+			f.ani_rate = 4
 		return
 	elif raw & dir_f:
 		f.st = St.WALK_F
