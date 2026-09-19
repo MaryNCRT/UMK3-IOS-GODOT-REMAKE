@@ -86,6 +86,10 @@ var coin: Texture2D = null
 var health := [100, 100]
 var run := [100, 100]
 var wins := [0, 0]
+## "ROUND N", "FIGHT!", "PLAYER N WINS", "PLAYER N WINS THE MATCH", or "" for
+## nothing. Set by `umk3_fight.gd`'s own round/match state -- this is purely
+## the drawing of it, the same split the health bars keep with `health`.
+var banner := ""
 var names := ["SCORPION", "SCORPION"]
 var shown := [100.0, 100.0]
 
@@ -149,6 +153,28 @@ func _draw() -> void:
 		_name(names[i], bar, mirrored, s)
 		_run(under, clampf(float(run[i]) / 100.0, 0.0, 1.0), mirrored)
 		_wins(under, wins[i], mirrored, s)
+	_banner(vp, s)
+
+
+## The centred round/match text -- "ROUND N", "FIGHT!", "PLAYER N WINS".
+##
+## **No sprite for this yet.** The real `DrawHUD` almost certainly has its
+## own bitmap art for these (arcade Mortal Kombat always does), but that art
+## has not been found in the extracted assets -- see umk3_audio.gd's own
+## note that the narrator's voice lines have not turned up either. This is a
+## placeholder in the fallback font rather than nothing, so the round system
+## itself is not blocked on an asset hunt that is a separate task.
+func _banner(vp: Vector2, s: float) -> void:
+	if banner == "":
+		return
+	var font := ThemeDB.fallback_font
+	var size := int(maxf(18.0, 30.0 * s))
+	var w := font.get_string_size(banner, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	var pos := Vector2(vp.x * 0.5 - w * 0.5, vp.y * 0.3)
+	draw_string_outline(font, pos, banner, HORIZONTAL_ALIGNMENT_LEFT, -1,
+		size, 5, Color(0, 0, 0, 0.9))
+	draw_string(font, pos, banner, HORIZONTAL_ALIGNMENT_LEFT, -1, size,
+		Color(1, 0.85, 0.2))
 
 
 ## The life bar: the blue sprite whole, then the red over what has been lost.

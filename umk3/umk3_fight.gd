@@ -1326,6 +1326,31 @@ var last_special := ""
 
 ## Frames since somebody hit the floor.
 var round_over := 0
+
+## **How many rounds it takes to win the match.** Not a guess: `DrawHUD`
+## (0x0002868a) tests `_RoundWins` against 0 then against 1 and draws at most
+## TWO round-win coins -- unrolled twice, not a loop -- so the binary itself
+## never expects a third. `umk3_hud.gd`'s own `_wins()` reads the same limit.
+const WINS_NEEDED := 2
+## Which round this is, for the "ROUND N" banner. Starts at 1 in `reset()`
+## the first time and is bumped by the round-over handler in `tick()`.
+var round_num := 1
+## Set once a fighter reaches WINS_NEEDED. **The match stops resetting into
+## another round when this is true** -- see the round-over handler below,
+## which used to call `reset()` unconditionally and start a third, fourth,
+## fifth round forever. The pause menu's `quit_match` is still how the
+## player leaves; this only stops the loop from restarting on its own.
+var match_over := false
+## The banner text: "ROUND N", "FIGHT!", "PLAYER N WINS", or "PLAYER N WINS
+## THE MATCH". "" draws nothing. `umk3_hud.gd` reads this every frame.
+var banner := ""
+## Counts down the ROUND N / FIGHT! intro after a fresh `reset()`. While it
+## is running, `tick()` still advances animation and physics but does not
+## read a player's stick or resolve a hit -- the arcade freezes both
+## fighters for the intro and this is that freeze.
+var intro_timer := 0
+const ROUND_BANNER_FRAMES := 90         ## 1.5 s at 60 Hz -- CHOSEN, not measured
+const FIGHT_BANNER_FRAMES := 60         ## 1.0 s -- CHOSEN, not measured
 ## The screen shake, from `shake_a11`. Counted down in ticks.
 var shake := 0
 var shake_amp := 0.0
@@ -1457,6 +1482,8 @@ func reset() -> void:
 		blood.clear()
 	frame = 0
 	round_over = 0
+	intro_timer = ROUND_BANNER_FRAMES + FIGHT_BANNER_FRAMES
+	banner = "ROUND %d" % round_num
 	if hud:
 		hud.reset()
 
@@ -2530,6 +2557,12 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		a.timer_total = a.timer
 		a.table = BT_NULL
 		a.vx = 0
+		var idx := 0 if a == fighters[0] else 1
+		if a.wins >= WINS_NEEDED:
+			banner = "PLAYER %d WINS THE MATCH" % (idx + 1)
+			match_over = true
+		else:
+			banner = "PLAYER %d WINS" % (idx + 1)
 
 
 ## **`is_he_blocking` (0x0005837c), for a human player, line for line.**
@@ -2910,7 +2943,18 @@ func tick() -> void:
 	for f in fighters:
 		f.prev_x = f.x
 		f.prev_y = f.y
-	var raw := [_read_player(0), _read_player(1)]
+	# **The ROUND N / FIGHT! freeze.** Neither fighter reads a button while
+	# this counts down -- CHOSEN timing (ROUND_BANNER_FRAMES/FIGHT_BANNER_
+	# FRAMES aren't measured), but freezing both fighters for it is what
+	# every version of this game does, and letting a player walk into the
+	# other one during "ROUND 2" is worse than a wrong number of frames.
+	if intro_timer > 0:
+		intro_timer -= 1
+		banner = ("ROUND %d" % round_num) if intro_timer > FIGHT_BANNER_FRAMES \
+			else "FIGHT!"
+		if intro_timer == 0:
+			banner = ""
+	var raw := [0, 0] if intro_timer > 0 else [_read_player(0), _read_player(1)]
 	last_raw = raw[0]
 	last_special = ""
 	if fighters[0].st == St.SPECIAL and fighters[0].timer == fighters[0].timer_total:
@@ -2981,6 +3025,7 @@ func tick() -> void:
 		hud.wins = [fighters[0].wins, fighters[1].wins]
 		hud.run = [fighters[0].turbo * 100 / RUN_MAX,
 			fighters[1].turbo * 100 / RUN_MAX]
+		hud.banner = banner
 		hud.tick()
 	_resolve_hits(fighters[0], fighters[1])
 	_resolve_hits(fighters[1], fighters[0])
@@ -3018,10 +3063,19 @@ func tick() -> void:
 
 	# The round is over once somebody is dead. Give the collapse and the
 	# victory pose time to play before the next one starts.
+	#
+	# **This used to call `reset()` unconditionally, forever.** Nothing
+	# checked `wins` against WINS_NEEDED, so a fighter who won two rounds
+	# just started a third, a fourth, a fifth -- the match never actually
+	# ended. `banner` was already set to "PLAYER N WINS" or "...WINS THE
+	# MATCH" back in `_resolve_hits`, at the moment `wins` reached the
+	# threshold, so the only thing missing here was acting on it.
 	if fighters[0].st == St.DEAD or fighters[1].st == St.DEAD:
 		round_over += 1
-		if round_over > 180:
-			reset()
+		if round_over > 180 and not match_over:
+			if fighters[0].wins < WINS_NEEDED and fighters[1].wins < WINS_NEEDED:
+				round_num += 1
+				reset()
 	frame += 1
 
 

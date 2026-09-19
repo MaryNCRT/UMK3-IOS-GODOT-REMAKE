@@ -171,7 +171,33 @@ var style := [STYLE_AUTO, STYLE_AUTO]
 
 func _init() -> void:
 	reset()
+	# **The "no automatic" rule above is right for a session already under
+	# way and wrong for a first boot.** `pref` defaults to KB for both
+	# players, and the ONLY way it ever becomes a pad is a saved config file
+	# or the pause menu's device picker -- so someone who plugs a pad in and
+	# presses play, with no config on disk yet, gets a keyboard-only game and
+	# no indication why. That is the bug: not that reassignment is unsafe
+	# mid-session (it is, and `detect()`'s own note explains why), but that
+	# NOTHING is safe to reassign on a boot with no session yet to hijack.
+	var first_run := not FileAccess.file_exists(CFG)
 	load_cfg()
+	if first_run:
+		_auto_assign_first_run()
+
+
+## Hand each player the next connected pad, in order, ONLY on a boot with no
+## saved config at all. Saved once, so this never runs again on this
+## machine -- from then on an explicit or defaulted choice is what
+## `detect()`'s own safety rule is protecting.
+func _auto_assign_first_run() -> void:
+	var pads := Input.get_connected_joypads()
+	var next := 0
+	for i in 2:
+		if next < pads.size():
+			pref[i] = ident(int(pads[next]))
+			next += 1
+	if next > 0:
+		save_cfg()
 
 
 func reset() -> void:
