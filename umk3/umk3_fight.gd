@@ -3048,30 +3048,46 @@ func _step_spear(f: Fight, other: Fight) -> void:
 ## walking INTO the other has his speed halved, and if both are closing they
 ## both stop.
 ##
-## **The vertical gate, now transcribed rather than skipped.** The original
-## decides between the three behaviours with the fighters' own box edges --
-## `part + 0x38` is the top and `part + 0x40` the bottom:
+## **The vertical gate, now with each fighter's REAL box, not one collapsed
+## number.** The original decides between the three behaviours with the
+## fighters' own box edges -- `part + 0x38` is the top and `part + 0x40` the
+## bottom, read fresh off whatever pose that fighter is in right now:
 ##
 ##     (pl0.bottom - 0x30) + y1  <  pl1.top + y2        p0 well ABOVE p1
 ##     y1 + pl0.top  <=  (pl1.bottom - 0x30) + y2       they OVERLAP
 ##     otherwise                                        p0 well BELOW p1
 ##
-## With this port's box -- top 6, bottom 136 -- both of those collapse to the
-## same number: the pair interact when their y's are within **82** units of
-## each other, and only the leash applies when they are not. So a fighter
-## launched by an uppercut stops being pushed once he is more than 82 units up,
-## and is still reeled in by the leash the whole way, which is what the engine
-## does and what "both on the ground" -- the gate this replaces -- did not.
+## **This used to fold that into one constant, 82, on the reasoning that
+## with only the flat stance box available both directional tests collapse
+## to the same symmetric distance.** They do, for two fighters who always
+## carry the same box -- which stopped being true the moment `_body_box`
+## learned real per-pose boxes (`DUCK_BOX`/`JUMP_BOX`): a fighter at the top
+## of a jump has a SHORTER box (96 tall, apex) than a grounded one (129),
+## so the two directional tests no longer agree and folding them into one
+## number silently went back to treating every jump as if it kept the
+## standing box's full height. That is a very plausible reason a jump meant
+## to carry a fighter clear over the other kept the push-apart engaged
+## longer than the real engine would have -- the real overlap test shrinks
+## with the real silhouette and this one did not.
 ##
-## Still simplified: `Pp + 0x40` is a per-fighter height threshold with no
-## writer anyone has found, and the countdown at `G + 0x456` likewise. Those
-## choose between "setup" and "apart" in the two non-overlapping cases; here
-## the non-overlapping cases always take the leash-only path.
-const REPELL_OVERLAP := 82               ## (BOX_TOP + BOX_H - 0x30) - BOX_TOP
+## Reading both fighters' own `_body_box` and testing the two directions
+## separately, exactly as the binary does, fixes that without needing the
+## one piece still missing: `Pp + 0x40`, a per-fighter height threshold with
+## no writer anyone has found, which the binary consults only in the two
+## NON-overlapping cases to choose between a full pass-through ("setup")
+## and velocity arbitration. Non-overlapping still takes the leash-only
+## path here, same simplification as before -- only the overlap TEST
+## itself changed.
+const REPELL_FUDGE := 0x30               ## measured, repell_func's own -0x30
 func _repell() -> void:
 	var a := fighters[0]
 	var b := fighters[1]
-	var overlap := absi(a.yi() - b.yi()) <= REPELL_OVERLAP
+	var abox := _body_box(a)
+	var bbox := _body_box(b)
+	# a well above b, or b well above a -- either way, not overlapping.
+	var a_above := int(abox[3]) - REPELL_FUDGE < int(bbox[1])
+	var b_above := int(bbox[3]) - REPELL_FUDGE < int(abox[1])
+	var overlap := not a_above and not b_above
 
 	var x1 := a.xi()
 	var x2 := b.xi()
