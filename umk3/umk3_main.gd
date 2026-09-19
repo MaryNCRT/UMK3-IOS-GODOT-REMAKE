@@ -359,6 +359,13 @@ func _ensure_fight() -> void:
 	_fight = _Fight.new()
 	_fight.audio = _audio
 	_fight.input = _input
+	# **The match used to end and just sit there.** `match_over` stops the
+	# round loop but nothing ever took the player back to a menu on its
+	# own -- the only way out was finding the pause menu's "quit match" by
+	# accident. `match_ended` fires once, after the win banner has had time
+	# to be read; leaving the stage is exactly what quitting from the pause
+	# menu already does, so the same handler covers both.
+	_fight.match_ended.connect(_leave_stage)
 	if _bars:
 		_bars.setup(_menu.textures)
 		_fight.hud = _bars

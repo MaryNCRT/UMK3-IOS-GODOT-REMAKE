@@ -169,6 +169,35 @@ func _sheet(stem: String) -> Texture2D:
 	return at
 
 
+## A region of a sheet, for a texture that packs more than one picture.
+func _crop(stem: String, region: Rect2) -> Texture2D:
+	var src := _tex(stem)
+	if src == null:
+		return null
+	var at := AtlasTexture.new()
+	at.atlas = src
+	at.region = region
+	return at
+
+
+## **`FE_MAINLOGO_EN` is not just the logo.** It is a 1024x1024 sheet that
+## also carries a whole SPLASH screen this port never shows -- a 2x2 grid of
+## stone plates, a "GET MORE GAMES" cross-promo button, and two "PLAY" plates
+## (an idle one and a lit one), stacked below the logo art in the same sheet.
+## `UMK_MAINMENU_EN.PNG`, in the raw extracted `res` (not bundled -- it is
+## the separate native splash the engine hands off to, not LIME art), has the
+## same four elements in the same relative layout, which is what confirms
+## this is a real second screen and not stray art.
+##
+## Using the whole sheet as "the logo" squeezed all of that into the small
+## box the logo is laid out in, so the splash's plates showed as tiny grey
+## smears under the title on both the title screen and the main menu. Scanned
+## the decoded sheet row by row for where non-white, non-transparent content
+## stops: the logo itself is rows 14-379, the first splash plate starts at
+## 415. Cropping there is what LOGO_REGION is.
+const LOGO_REGION := Rect2(0, 0, 1024, 390)
+
+
 ## A button on the game's own torn-paper plate.
 func _button(text: String, cb: Callable) -> Button:
 	var b := Button.new()
@@ -241,7 +270,7 @@ func _show_title() -> void:
 	for c in _rows.get_children():
 		c.queue_free()
 	_bg.texture = _sheet("FE_TITLE_BG")
-	_logo.texture = _sheet("FE_MAINLOGO_EN")
+	_logo.texture = _crop("FE_MAINLOGO_EN", LOGO_REGION)
 	_logo.visible = true
 	_hint.text = "PRESS ANY KEY"
 	_layout()
@@ -252,7 +281,7 @@ func _show_main() -> void:
 	for c in _rows.get_children():
 		c.queue_free()
 	_bg.texture = _sheet("FE_MENU_PLAY")
-	_logo.texture = _sheet("FE_MAINLOGO_EN")
+	_logo.texture = _crop("FE_MAINLOGO_EN", LOGO_REGION)
 	_logo.visible = true
 	_hint.text = ""
 	await get_tree().process_frame

@@ -20,6 +20,11 @@
 ## ## No game data ships here
 extends Node3D
 
+## Fired once, a few seconds after `match_over` becomes true -- long enough
+## for the "PLAYER N WINS THE MATCH" banner to actually be read. The shell
+## (`umk3_main.gd`) is what owns leaving the stage; this only says when.
+signal match_ended
+
 const _Fighter := preload("res://umk3/umk3_fighter.gd")
 const _Spear := preload("res://umk3/umk3_spear.gd")
 const _Ani := preload("res://umk3/umk3_scorpion_ani.gd")
@@ -1351,6 +1356,9 @@ var banner := ""
 var intro_timer := 0
 const ROUND_BANNER_FRAMES := 90         ## 1.5 s at 60 Hz -- CHOSEN, not measured
 const FIGHT_BANNER_FRAMES := 60         ## 1.0 s -- CHOSEN, not measured
+## How many frames after the KO to hold the "WINS THE MATCH" screen before
+## `match_ended` fires and the shell leaves the stage. CHOSEN, not measured.
+const MATCH_OVER_HOLD := 300            ## 5 s at 60 Hz
 ## The screen shake, from `shake_a11`. Counted down in ticks.
 var shake := 0
 var shake_amp := 0.0
@@ -3072,7 +3080,16 @@ func tick() -> void:
 	# threshold, so the only thing missing here was acting on it.
 	if fighters[0].st == St.DEAD or fighters[1].st == St.DEAD:
 		round_over += 1
-		if round_over > 180 and not match_over:
+		if match_over:
+			# **Leaving was left to the player finding the pause menu's
+			# "quit match" on their own.** Nothing ever took them back to
+			# where they could start another one, so the match-over screen
+			# was a dead end in practice. MATCH_OVER_HOLD is CHOSEN, not
+			# measured -- long enough to actually read the banner, no
+			# more.
+			if round_over == MATCH_OVER_HOLD:
+				match_ended.emit()
+		elif round_over > 180:
 			if fighters[0].wins < WINS_NEEDED and fighters[1].wins < WINS_NEEDED:
 				round_num += 1
 				reset()
