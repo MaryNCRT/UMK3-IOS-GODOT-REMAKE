@@ -11,11 +11,26 @@
 ##
 ## ## What is measured and what is chosen
 ##
-## The arena, the floor, the hitbox, the input contract and the physics are all
-## out of the binary and marked so. The walk speed, the jump height, the damage,
-## the move tempo and the starting gap are CHOSEN -- they live in per-character
-## data tables that have not been extracted, and they are kept in one block so
-## that when those tables are read there is one place to correct.
+## **This used to say the walk speed, the jump height, the damage, the move
+## tempo and the starting gap were all CHOSEN, pending per-character tables
+## nobody had read yet.** All five have since been read: `WALK_FORWARD`/
+## `WALK_BACKWARD` are `_walk_forward_info`/`_walk_backward_info` (0x0016ef6c/
+## 0x0016f03c) per character, `JUMP_VY`/`GRAVITY` are their own literals,
+## damage is the STK table's own column out of `strike_check_regs`' word5,
+## the swing/retract rates were each audited against their own `t_r_*`/
+## `t_stat_do_*` proc, and `start_gap` is derived from the measured strike
+## and body boxes rather than picked. Left uncorrected here, this paragraph
+## would send the next reader hunting for tables that have already been
+## found.
+##
+## What is still genuinely chosen, and marked so at its own definition
+## rather than blanket-claimed here: the ducking and airborne body box
+## (`DUCK_BOX_TOP`/`DUCK_BOX_H`/`AIR_BOX_INSET` -- the real per-frame box is
+## filled at RUNTIME by logic not yet located, see `BOX_W`'s own note), and
+## the round-intro timing (`ROUND_BANNER_FRAMES` and friends).
+##
+## The arena, the floor, the STANDING hitbox, the input contract and the
+## physics are all out of the binary and marked so at their own definitions.
 ##
 ## ## No game data ships here
 extends Node3D
@@ -100,6 +115,13 @@ const BOX_LEFT := -29
 const BOX_TOP := 6
 const BOX_W := 55
 const BOX_H := 130
+
+## The ducking and airborne body box. **CHOSEN, not measured** -- see
+## `_body_box`'s own note on why a shape is used here rather than the
+## standing box glued to every pose.
+const DUCK_BOX_TOP := BOX_TOP + BOX_H / 2
+const DUCK_BOX_H := BOX_H - BOX_H / 2
+const AIR_BOX_INSET := 10
 
 ## The ten input bits. **This is the whole input contract** -- proved three
 ## ways, in the block at the top of decomp/gamecode/logic/joy.c.
@@ -1718,10 +1740,39 @@ func _strike_box(f: Fight, stk: Array) -> Array:
 
 
 ## A fighter's own body box, from `_FrameInfo2`. See BOX_W.
+##
+## **Was the same box, rigidly, whether standing, ducking or airborne.**
+## BOX_W/BOX_H/BOX_TOP/BOX_LEFT are the STANCE box -- `_FrameInfo2` names it
+## per GLOBAL FRAME, and the real engine reads a different one for a
+## different pose. That per-frame table is filled at runtime for frames
+## whose static entry is zero (see BOX_W's own note); the fill logic has
+## not been located, so there is no decompiled duck or jump box to read
+## yet. Gluing the standing box to a ducking fighter regardless meant a
+## high attack aimed at head height still connected under a duck, because
+## the hurtbox never moved down to where the head actually went.
+##
+## CHOSEN, not measured, until the real per-frame table is read:
+## ducking keeps the feet where they are and collapses the top down to
+## half of BOX_H, which is the shape every 2D fighter's crouch hurtbox
+## takes even where the exact fraction differs. Airborne pulls the box in
+## from every side by AIR_BOX_INSET, since a jump curls the silhouette in
+## rather than just sliding a full-height box up with it.
 func _body_box(f: Fight) -> Array:
-	var x0: int = f.xi() + BOX_LEFT
-	var y0: int = f.yi() + BOX_TOP
-	return [x0, y0, x0 + BOX_W, y0 + BOX_H]
+	var top := BOX_TOP
+	var h := BOX_H
+	var left := BOX_LEFT
+	var w := BOX_W
+	if f.table == BT_DUCK:
+		top = DUCK_BOX_TOP
+		h = DUCK_BOX_H
+	elif f.yi() < _ground_y():
+		top += AIR_BOX_INSET
+		h -= AIR_BOX_INSET * 2
+		left += AIR_BOX_INSET
+		w -= AIR_BOX_INSET * 2
+	var x0: int = f.xi() + left
+	var y0: int = f.yi() + top
+	return [x0, y0, x0 + w, y0 + h]
 
 
 static func _overlap(a: Array, b: Array) -> bool:
