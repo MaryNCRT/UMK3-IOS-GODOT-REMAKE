@@ -1023,8 +1023,16 @@ const STRIKE_LIVE := {
 	_Stk.DUCK_KICKH: 5, _Stk.DUCK_KICKL: 2,
 	_Stk.UPPERCUT: 1, _Stk.ROUNDH: 3,
 	_Stk.KNEE: 1, _Stk.ELBOW: 5,
-	# The air attacks' own count has not been read; the whole swing stands in
-	# while the fighter is off the ground. CHOSEN.
+	# **The air attacks don't run through t_attk2 at all -- t_air_strike is
+	# its own loop, and it checks every game tick for as long as the
+	# swing's OWN animation stream is still showing a frame** (the raw word
+	# it reads from field40 is nonzero), stopping only when the clip ends
+	# or the fighter lands. That is "the whole clip", not a fraction of it
+	# or a guess standing in for one: MOVE_ANI already has all four at 3
+	# frames, and 3 is what belongs here so `live = STRIKE_LIVE * rate`
+	# comes out to the clip's real length. No longer CHOSEN -- see
+	# STRIKE_RATE's own note on the same chain, where the real rate (also
+	# 3) turned up alongside this.
 	_Stk.JUMP_PUNCH: 3, _Stk.JUMP_KICK: 3,
 	_Stk.FLIP_PUNCH: 3, _Stk.FLIP_KICK: 3,
 }
@@ -1061,6 +1069,22 @@ const STRIKE_RECOVERY := {}
 ## pause is the weight of the hit, and this port did not have it.
 const HIT_FREEZE := 12
 
+## **The four air attacks were carrying their STK table index, not a rate.**
+## `t_do_flip_punch`/`t_do_jumpup_kick`/`t_do_jumpup_punch`/`t_do_flip_kick`
+## (mkstat.c) each set `field1c` to 0xc/0xa/9/0xb right before pushing
+## `t_air_strike` -- and inside `t_air_strike`'s token 0, that value is
+## copied straight to `field48` (the STRIKE ID `strike_check_a0` reads,
+## the same slot `t_attk2` uses for grounded strikes) BEFORE `field1c` is
+## overwritten with `field24` and handed to `init_anirate`. 9, 10, 11, 12 are
+## exactly umk3_strikes.gd's own STK indices for these four moves -- not a
+## coincidence, `field48` IS that index -- and `field24` is what actually
+## reaches `init_anirate`.
+##
+## `field24` is computed differently in each of the four callers (0x10-0xd,
+## (0xa+6)-0xd, (9+6)-0xc, (0x200-0x1f0)-0xd) and every one of them comes out
+## to exactly **3**. So all four air attacks animate at rate 3, roughly
+## three to four times faster than the 9-12 this carried before -- which
+## made every jump attack look like it was swinging through wet cement.
 const STRIKE_RATE := {
 	_Stk.HIKICK: 1, _Stk.LOKICK: 1,
 	# `t_jhp4`/`t_jhp5`/`t_jmp4`/`t_jmp5` all set `field1c = 3` before
@@ -1068,8 +1092,8 @@ const STRIKE_RATE := {
 	# STRIKE_RATE's own const block for how this was misread the first time.
 	_Stk.HI_PUNCH: 3, _Stk.LO_PUNCH: 3,
 	_Stk.SWEEP: 3, _Stk.DUCK_PUNCH: 3, _Stk.DUCK_KICKH: 3,
-	_Stk.DUCK_KICKL: 2, _Stk.UPPERCUT: 2, _Stk.JUMP_PUNCH: 9,
-	_Stk.JUMP_KICK: 10, _Stk.FLIP_KICK: 11, _Stk.FLIP_PUNCH: 12,
+	_Stk.DUCK_KICKL: 2, _Stk.UPPERCUT: 2, _Stk.JUMP_PUNCH: 3,
+	_Stk.JUMP_KICK: 3, _Stk.FLIP_KICK: 3, _Stk.FLIP_PUNCH: 3,
 	_Stk.ROUNDH: 3, _Stk.KNEE: 1, _Stk.ELBOW: 1,
 }
 
