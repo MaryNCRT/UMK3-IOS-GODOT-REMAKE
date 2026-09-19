@@ -1147,15 +1147,17 @@ const STRIKE_LIVE := {
 ## sets `field1c = 4` before the push -- its own comment: "neither the
 ## swing's rate nor the standing kicks' 3." `t_joy_duck_kickl` (0x0002fc5c)
 ## sets 2 (or park 6/10 first depending on `is_he_joy`, which does not
-## change the retract rate itself). `t_joy_duck_punch`'s own comment says
-## it plainly -- "no retraction state -- the duck punch's own proc does
-## all of that" -- so DUCK_PUNCH's tail is the animation's natural
-## continuation into SCDUCKPUNCH's own part 2, not a second explicit rate;
-## not added here without tracing that rate too.
+## change the retract rate itself). `t_joy_duck_punch`'s own comment --
+## "no retraction state -- the duck punch's own proc does all of that" --
+## means exactly that: unlike the two duck kicks, `t_stat_do_duck_punch`
+## (mkstat.c 0x0004e814) retracts ITSELF, no help from the joystick
+## dispatcher needed. Read whole: token 0x284 sets `field1c = 3` before
+## installing `t_retract_strike` directly. Same rate as the standing
+## kicks, different reason to have it.
 const STRIKE_RETRACT := {
 	_Stk.HIKICK: 3, _Stk.LOKICK: 3, _Stk.UPPERCUT: 4,
 	_Stk.KNEE: 6, _Stk.ELBOW: 3, _Stk.ROUNDH: 4, _Stk.SWEEP: 5,
-	_Stk.DUCK_KICKH: 4, _Stk.DUCK_KICKL: 2,
+	_Stk.DUCK_KICKH: 4, _Stk.DUCK_KICKL: 2, _Stk.DUCK_PUNCH: 3,
 }
 
 ## **Removed -- `HI_PUNCH: 19` had no citation and the traced chain has no
