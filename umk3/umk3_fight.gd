@@ -1318,6 +1318,12 @@ class Fight extends RefCounted:
 	## since this fighter last returned to normal. Feeds the corner-trap
 	## mercy rule; see `CORNER_TRAP_HITS`.
 	var p_hit := 0
+	## `MK3F_HALF_DAMAGE`/`MK3F_QUARTER_DAMAGE` (GrObj 0x30, set by
+	## `set_half_damage`/`set_quarter_damage`, other.c). See DAMAGE_SCALE_REACT's
+	## own note: every further hit lands at a quarter of its table damage while
+	## this is set, cleared the same instant p_hit/combo_dmg are -- on the
+	## return to normal, not per-hit.
+	var damage_scaled := false
 	## `field54` (MK3OBJPROC -- `add_combo_damage`): damage taken in the same
 	## string p_hit counts. Godot's `health` is already 0-100, the same
 	## scale the binary gets to with `field54 * 100 / 166`, so no rescale
@@ -1679,6 +1685,7 @@ func reset() -> void:
 		f.combo_serial = 0
 		f.last_combo_pct = 0
 		f.turn_from_duck = false
+		f.damage_scaled = false
 		f.collapsed = false
 		f.dying = false
 		f.ani_dir = 1
@@ -2904,6 +2911,8 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	if HIT_FREEZE > 0 and (sid == _Stk.HIKICK or sid == _Stk.LOKICK):
 		a.freeze = HIT_FREEZE
 	var dmg: int = stk[STK_DMG]
+	if b.damage_scaled:
+		dmg = maxi(1, dmg >> 2)          # bar_reducer: both flags, one >>2
 	var away := 1 if b.xi() >= a.xi() else -1
 	b.buf.clear()
 
@@ -2920,6 +2929,8 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	# is why nobody in Mortal Kombat dies guarding.
 	if sid >= 0 and _is_he_blocking(b, stk):
 		var chip: int = int(_Stk.CHIP[sid])
+		if b.damage_scaled:
+			chip = maxi(1, chip >> 2)    # bar_reducer scales this path too
 		if chip < b.health:
 			b.health -= chip
 			b.st = St.BLOCK
@@ -3083,10 +3094,33 @@ func _back_to_normal(f: Fight) -> void:
 		f.combo_serial += 1
 	f.p_hit = 0
 	f.combo_dmg = 0
+	# `back_to_normal_px`'s own mask clears MK3F_HALF_DAMAGE and
+	# MK3F_QUARTER_DAMAGE alongside the hit/block counters -- one more
+	# thing that resets on the return to normal, not per hit.
+	f.damage_scaled = false
+
+## **`t_r_flip_kick`/`t_r_scorp_tele` unconditionally call `set_half_damage`
+## on the man they just launched -- not on the hit that triggered it, on
+## every hit he takes AFTER, until he is back to normal.** `bar_reducer`
+## (other.c 0x00054d40, where the STK table's damage actually gets
+## subtracted from health) reads GrObj+0x30 and, if either
+## MK3F_HALF_DAMAGE or MK3F_QUARTER_DAMAGE is set, shifts the damage right
+## by TWO -- both flags, the same shift, floored at 1. Not a guess at
+## "half": read directly, and the binary's own comment calls the two names
+## sharing one behavior worth noting without reconciling. This port had no
+## damage reduction for a launched, still-airborne victim at all.
+##
+## Scoped to the two reactions already reachable here (10 = t_r_flip_kick,
+## 115 = t_r_scorp_tele/scorpion's own teleport punch) rather than the
+## much longer list mkreact.c has (mostly combo finishers and character
+## specials this port does not model yet).
+const DAMAGE_SCALE_REACT := [10, 115]
 
 func _take_reaction(f: Fight, react: int, away := 1, airborne := false) -> void:
 	f.react = react
 	f.p_hit += 1        # inc_p_hit, run at the top of every reaction
+	if DAMAGE_SCALE_REACT.has(react):
+		f.damage_scaled = true
 	if KNOCKS_DOWN_IF_AIRBORNE.has(react) and not airborne:
 		var grounded_ani := ANI_STUMBLE if react == 115 \
 			else int(REACT_ANI.get(react, ANI_HIT))
