@@ -2688,21 +2688,23 @@ func _is_he_blocking(b: Fight, stk: Array) -> bool:
 ##
 ## -- and the same shape (field30 = t_generic_airborn_hit before pushing
 ## t_reaction_start, an away_x_vel + a plain animation when grounded) turned
-## up in five more of Scorpion's reachable reactions once the rest of
+## up in six more of Scorpion's reachable reactions once the rest of
 ## mkreact.c's t_r_* functions were read the same way: 0 (t_r_hi_kick), 1
-## (t_r_lo_kick), 6 (t_r_duck_kickh), 9 (t_r_elbow_knee, via t_rek3) and 11
-## (t_r_flip_punch). For all of those the grounded clip is exactly what
-## REACT_ANI already names -- ANI_HIT, ANI_LO_HIT, and so on were already
-## right for the common (grounded) case, just missing the airborne
-## knockdown. 115 is the one exception: its grounded clip is
-## `t_stumble_back`'s ANI_STUMBLE, not anything REACT_ANI holds for it
-## (REACT_ANI[115] is ANI_KNOCKDOWN, which only applies airborne).
+## (t_r_lo_kick), 6 (t_r_duck_kickh), 9 (t_r_elbow_knee, via t_rek3), 11
+## (t_r_flip_punch), and 76 (t_r_tusk_elbow, which installs t_rek3 directly
+## -- the very same function 9 hands off to, just reached from a different
+## strike). For all of those the grounded clip is exactly what REACT_ANI
+## already names -- ANI_HIT, ANI_LO_HIT, and so on were already right for
+## the common (grounded) case, just missing the airborne knockdown. 115 is
+## the one exception: its grounded clip is `t_stumble_back`'s ANI_STUMBLE,
+## not anything REACT_ANI holds for it (REACT_ANI[115] is ANI_KNOCKDOWN,
+## which only applies airborne).
 ##
-## Grounded is the common case for all six -- nothing in this port launches
-## these at an airborne target specifically -- and every one of them knocked
-## down unconditionally (115) or never (the other five) before this was
-## traced.
-const KNOCKS_DOWN_IF_AIRBORNE := [0, 1, 6, 9, 11, 115]
+## Grounded is the common case for all seven -- nothing in this port
+## launches these at an airborne target specifically -- and every one of
+## them knocked down unconditionally (115) or never (the other six) before
+## this was traced.
+const KNOCKS_DOWN_IF_AIRBORNE := [0, 1, 6, 9, 11, 76, 115]
 
 func _take_reaction(f: Fight, react: int, away := 1, airborne := false) -> void:
 	f.react = react
