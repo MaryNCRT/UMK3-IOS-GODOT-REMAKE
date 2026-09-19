@@ -485,19 +485,43 @@ const REACT_ANI := {
 ## as never knocking down before this was traced.
 const KNOCKS_DOWN := [4, 8, 10, 12, 45, 115]
 
-## **Most reactions inherit their rate; `t_r_hi_kick` does not, and this is
-## the one case read so far.** `t_r_hi_kick` (0x00045410) plays SCHIHIT the
-## same way every other non-knockdown reaction does -- `field40 = 0x1c`,
-## `get_char_ani` -- but then sets `field1c = 4` before handing to
-## `t_mframew`, and `t_mframew` (other.c, `obj->field1c` -> `thread->fieldfc`,
-## commented "wait this animation's rate") is what actually turns that into a
-## sleep. `t_r_hi_punch`, `t_r_duck_kickh/kickl`, `t_r_duck_punch` and
-## `t_r_flip_punch` were all read the same way and none of them touch
-## `field1c` between `get_char_ani` and their own push -- they inherit
-## whatever the fighter was already playing at, same as a jab. Missing keys
-## fall back to -1 (inherit) in `_ani_for`.
+## **"Most reactions inherit their rate" was wrong -- checked one idiom and
+## missed the other.** `t_r_hi_kick` (0x00045410) sets `field1c = 4` directly
+## before handing to `t_mframew`, and `t_mframew` (other.c, `obj->field1c` ->
+## `thread->fieldfc`, commented "wait this animation's rate") is what turns
+## that into a sleep. Reading ONLY for that direct-store idiom, and finding
+## none of `t_r_hi_punch`/`t_r_duck_kickh/kickl`/`t_r_duck_punch`/
+## `t_r_flip_punch` touch `field1c` between `get_char_ani` and their own
+## push, is what said they inherit.
+##
+## **They don't -- they go through the OTHER idiom, `t_animate_a9`'s packed
+## `field40`.** `t_animate_a9`/`t_animate2_a9` (other.c 0x000556ac) take the
+## HIGH half of `field40` as the rate (arithmetic-shifted, so signed) and the
+## LOW half as the animation index -- `t_r_hi_punch`'s own banner even flags
+## it: "the high halfword's own meaning is not read" was left as an open
+## question in mkreact.c until this was traced. Every non-knockdown reaction
+## that was still marked "inherit" turned out to set one of these two
+## explicit rates, checked one at a time:
+##
+##     3 (t_r_hi_punch, t_r_lo_punch, t_r_duck_punch, t_r_duck_kickh/kickl)
+##     4 (t_r_lo_kick, t_r_flip_punch, t_r_elbow_knee/t_r_tusk_elbow via t_rek3)
+##
+## Only `t_r_scorpion_spear` (117) is real "inherit": it hands `t_spear0` a
+## sound index in `field1c` (consumed by `his_ochar_sound` before anything
+## else touches it), not a rate, and nothing else in that routine's own
+## chain sets one either. Missing keys fall back to -1 (inherit) in
+## `_ani_for`, which is now just that one reaction.
 const REACT_RATE := {
-	0: 4,        # t_r_hi_kick, measured -- see the banner above
+	0: 4,        # t_r_hi_kick        field1c = 4 direct
+	1: 4,        # t_r_lo_kick        field40 = 0x4001d/0x40007
+	2: 3,        # t_r_hi_punch       field40 = 0x3001c
+	3: 3,        # t_r_lo_punch       field40 = 0x3001d/0x30007
+	5: 3,        # t_r_duck_punch     field40 = 0x3001d/0x30007
+	6: 3,        # t_r_duck_kickh     field40 = 0x3001d/0x30007
+	7: 3,        # t_r_duck_kickl     field40 = 0x3001d/0x30007
+	9: 4,        # t_r_elbow_knee     via t_rek3, field40 = 0x4001c
+	11: 4,       # t_r_flip_punch     field40 = 0x4001c
+	76: 4,       # t_r_tusk_elbow     installs t_rek3 directly
 }
 
 ## **The collapse at the end of a round**, from `t_collapse_on_ground`
@@ -3008,7 +3032,14 @@ func _take_reaction(f: Fight, react: int, away := 1, airborne := false) -> void:
 		var grounded_ani := ANI_STUMBLE if react == 115 \
 			else int(REACT_ANI.get(react, ANI_HIT))
 		f.st = St.HIT
-		f.timer = _ani_length(grounded_ani, maxi(1, RATE_STANCE + rate_bias))
+		# **This used to hardcode RATE_STANCE for every one of these.** Wrong
+		# for the three (0, 1, 9/76 share the same rate) that turned out to
+		# read an explicit rate off the binary -- see REACT_RATE's own note.
+		# The rest really do inherit, and RATE_STANCE remains the stand-in
+		# for that (no snapshot of the fighter's own rate at hit time is
+		# threaded through to here).
+		var grounded_rate: int = int(REACT_RATE.get(react, RATE_STANCE))
+		f.timer = _ani_length(grounded_ani, maxi(1, grounded_rate + rate_bias))
 		f.timer_total = f.timer
 		return
 	var ani: int = int(REACT_ANI.get(react, ANI_HIT))
@@ -3018,7 +3049,10 @@ func _take_reaction(f: Fight, react: int, away := 1, airborne := false) -> void:
 		_launch(f, away)
 		return
 	f.st = St.HIT
-	f.timer = _ani_length(ani, maxi(1, RATE_STANCE + rate_bias))
+	# Same fix as the grounded branch above: REACT_RATE first, RATE_STANCE
+	# only for the one reaction (117) that genuinely has no explicit rate.
+	var rate: int = int(REACT_RATE.get(react, RATE_STANCE))
+	f.timer = _ani_length(ani, maxi(1, rate + rate_bias))
 	f.timer_total = f.timer
 
 
