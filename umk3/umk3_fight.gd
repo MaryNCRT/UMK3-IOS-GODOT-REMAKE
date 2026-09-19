@@ -1956,6 +1956,25 @@ func _start_attack(f: Fight, mv: int, dist: int) -> void:
 			var extra := hold - f.timer_total
 			f.timer += extra
 			f.timer_total += extra
+	elif f.strike >= 0:
+		# **The same shape as the punches' hold, generalized.** Traced
+		# t_attk2 the same way as t_jhp4/t_jmp4 (see _resolve_hits's own
+		# note): every strike that goes through t_striker/t_attk2 opens its
+		# check window only after its OWN extend part has played, not at
+		# elapsed 0, and a10 is raw ticks with no rate scaling. The extend
+		# part's own length is _move_frames' own p1 -- the stream's "out"
+		# section, before ANI_TAIL -- so reuse it rather than measure it
+		# twice.
+		var ani: int = int(STRIKE_ANI.get(f.strike, 0))
+		var st := _stream(ani)
+		if not st.is_empty():
+			var p1: int = (st[2] as Array).size()
+			var rate := maxi(1, _strike_rate(f.strike, f))
+			var hold: int = p1 * rate + int(STRIKE_LIVE.get(f.strike, 0))
+			if f.timer_total < hold:
+				var extra := hold - f.timer_total
+				f.timer += extra
+				f.timer_total += extra
 	if audio:
 		# `t_stat_do_hi_kick`, `t_stat_do_uppercut` and `_sweep_sounds` are the
 		# three that take `big_whoosh`; the punches and the flips take
@@ -2763,39 +2782,31 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		if not a.tele_wrapped:
 			return
 	else:
-		# **`t_attk2`'s own window**: live from the first frame of the move for
-		# `pl->0x44` game frames, one check a frame. Not a fraction of the clip
-		# any more -- see STRIKE_LIVE.
+		# **`t_attk2`'s own window, corrected the same way the punches' was.**
+		# `t_attk2` (other.c 0x000594d4) pushes `t_act_mframew` FIRST -- same
+		# shape as `t_jhp4`/`t_jmp4` -- and only calls `strike_check_a0` for
+		# the first time once that unwinds. `t_kick2`/`t_do_knee`/`t_do_elbow`/
+		# `t_stat_do_sweep_kick`/`t_stat_do_roundhouse` all set `obj->a10` as
+		# a RAW TICK COUNT before installing `t_striker`'s chain, with no rate
+		# scaling in the binary -- exactly like the punches' `a10 = 5`.
 		#
-		# **This claim needs redoing, the same way the punches' did.** Read
-		# `t_attk2` (other.c 0x000594d4) whole while tracing the punch fix:
-		# token 0 pushes `t_act_mframew` FIRST -- same as `t_jhp4`/`t_jmp4` --
-		# and only calls `strike_check_a0` for the first time once that
-		# unwinds. `t_kick2` sets `obj->a10 = 6` (other.c/mkstat.c) BEFORE
-		# installing `t_striker`'s chain that reaches `t_attk2`, and it is a
-		# raw tick count with no rate scaling in the binary, exactly like the
-		# punches' `a10 = 5`. So both halves of the punch bug are also real
-		# here: the window opens too early AND `* rate` below makes it too
-		# long. NOT fixed in this pass -- unlike the punches, kicks have no
-		# PUNCH_EXTEND-equivalent measured yet (their swing isn't split into
-		# named sub-parts the way H1/L1 are), so removing `* rate` alone
-		# without ALSO moving the open point would shrink the window without
-		# opening it later, which could make a kick whiff every time instead
-		# of connecting early. Needs each strike's own extend-clip length
-		# measured (one at a time: HIKICK/LOKICK/UPPERCUT/ROUNDH/KNEE/ELBOW/
-		# SWEEP/the duck kicks) before touching this safely.
+		# `PUNCH_EXTEND` has no equivalent CONSTANT for the rest, because
+		# these swings aren't split into named sub-parts the way H1/L1 are --
+		# but `_move_frames` already splits the same stream into an "out"
+		# part and a tail (`ANI_TAIL`) to time the retraction, and the out
+		# part IS the extend: reused here instead of measuring it twice.
 		var sid0 := _strike_now(a, b)
 		var rate := maxi(1, _strike_rate(sid0, a))
-		var live: int = int(STRIKE_LIVE.get(sid0, 3)) * rate
+		var live: int = int(STRIKE_LIVE.get(sid0, 3))
 		var elapsed := a.timer_total - a.timer
-		# **The two punches open their window late, not at elapsed 0.**
-		# `t_jhp4`/`t_jmp4` don't call `punch_strike_check` until the extend
-		# part (H1/L1, PUNCH_EXTEND frames) has already played in full -- see
-		# this function's own banner. Every other strike's window (`t_attk2`)
-		# really does start at elapsed 0, confirmed separately.
 		var open_at := 0
 		if sid0 == _Stk.HI_PUNCH or sid0 == _Stk.LO_PUNCH:
 			open_at = PUNCH_EXTEND * rate
+		else:
+			var ani: int = int(STRIKE_ANI.get(sid0, 0))
+			var st := _stream(ani)
+			if not st.is_empty():
+				open_at = (st[2] as Array).size() * rate
 		if elapsed < open_at or elapsed > open_at + live:
 			return
 	if not _overlap(_strike_box(a, stk), _body_box(b)):
