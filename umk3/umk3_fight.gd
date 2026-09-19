@@ -220,6 +220,12 @@ const GRAVITY := int(0.5 * ONE)         ## measured, field20 + 0xa8000
 ## the pc-relative load lands at 0x000317d0 and the word there is 0xfffc0000.)
 const JUMP_VX := int(4.0 * ONE)         ## measured, field48 at both flip entries
 
+## How long the floor holds a fighter before giving control back. Measured
+## from `t_jump_up_land_jsrp` (3 + 3 ticks, straight) and
+## `t_angle_jump_land_jsrp` (3 ticks, angled) -- see St.JUMP's own note.
+const LANDING_HOLD := 6
+const LANDING_HOLD_ANGLE := 3
+
 ## **How long a move lasts is its animation's length**, and now that is the
 ## engine's own stream rather than a range read off the frame list.
 const T_HIT := 16
@@ -1247,6 +1253,12 @@ class Fight extends RefCounted:
 	## height test is a comparison against the floor every frame; this is how
 	## the port notices the frame it stops being true on.
 	var was_airborne := false
+	## Set the instant a jump touches down, cleared once the landing hold
+	## (LANDING_HOLD/LANDING_HOLD_ANGLE) finishes. Separate from `timer`
+	## itself because `timer` carries whatever an earlier state left in it
+	## for the whole flight -- St.JUMP never touches it while airborne -- so
+	## `timer == 0` cannot tell "just landed" from "left over from before".
+	var landing_hold := false
 	## Was the stick held AWAY from the opponent when the button went down?
 	## `is_stick_away` (0x00055df0) is what turns a high kick into a
 	## roundhouse and a low kick into a sweep.
@@ -1547,6 +1559,7 @@ func reset() -> void:
 		f.strike = -1
 		f.freeze = 0
 		f.airborne_launch = false
+		f.landing_hold = false
 		f.turbo = RUN_MAX
 		f.turbo_pen = 0
 		f.sp_live = false
@@ -2434,6 +2447,25 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.g = 0
 				f.vx = 0
 				f.y = _ground_y() * ONE
+				if not f.landing_hold:
+					# **Landing was instant; the binary's is not.**
+					# `t_jump_up_land_jsrp` (other.c 0x00059f44, the straight
+					# jump) re-fetches SCJUMP and holds THREE ticks on its
+					# second frame, then goes back and holds three more on
+					# the first (the take-off crouch, played backwards on
+					# the way down) before ever giving control back --
+					# `t_angle_jump_land_jsrp` (0x00059eb0, the angled jump)
+					# is simpler, one fresh `do_next_a9_frame` and a single
+					# three-tick hold. Neither unwinds the instant the floor
+					# is touched, which is what this did.
+					f.landing_hold = true
+					f.timer = LANDING_HOLD_ANGLE if f.table == BT_ANGLE_JUMP \
+						else LANDING_HOLD
+					f.timer_total = f.timer
+					return
+				if f.timer > 0:
+					return
+				f.landing_hold = false
 				f.st = St.STANCE
 				f.table = BT_STANCE
 				if audio:
@@ -3355,7 +3387,15 @@ func _ani_for(f: Fight) -> Array:
 		St.DUCK:
 			return [ANI_DUCK, -1]
 		St.JUMP:
-			return [ANI_JUMPFLIP if f.table == BT_ANGLE_JUMP else ANI_JUMP, -1]
+			# **Neither jump inherits its rate -- both were, and both are
+			# wrong for it.** `t_do_jump_up` (other.c 0x000580e8) sets
+			# `field28 = 4` and `t_do_flip` (joy.c 0x00030634, the angled
+			# jump) sets `field28 = 3`, both staged the same way TELE_RATE
+			# already was and both consumed by `t_flight_call`'s own
+			# `init_anirate(obj)` right after -- a real, different rate
+			# each, not "whatever the fighter already had."
+			return [ANI_JUMPFLIP if f.table == BT_ANGLE_JUMP else ANI_JUMP, \
+				3 if f.table == BT_ANGLE_JUMP else 4]
 		St.WALK_F:
 			return [ANI_WALK_F, WALK_FORWARD[CHARACTER][WALK_RATE]]
 		St.WALK_B:
