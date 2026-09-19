@@ -2486,9 +2486,19 @@ func _raise_turbo() -> void:
 ## against an invented reach and a dy against the whole body height, so a jab
 ## landed from anywhere in front and an uppercut could not miss.
 ##
-## The strike is live for the middle of the move. **WHICH frames are live is
-## still chosen**: the engine calls `punch_strike_check` from the move's own
-## state on the frames that state decides, and those states are not decompiled.
+## The strike is live for the middle of the move, and this session confirmed
+## the SHAPE of that rather than leaving it chosen. `t_jhp4`/`t_jmp4` (joy.c)
+## call `punch_strike_check` exactly once, right when the extension pose is
+## reached -- but that push straight into `t_punch_sleep`, whose own banner
+## says it plainly: "the strike check is re-run every pass, but only while
+## field48 is non-negative." `punch_strike_check` sets field48 to -1 the
+## instant it connects, so the real shape is: test every frame from the
+## extension pose onward, for up to STRIKE_LIVE frames, stop at the first
+## hit. That is exactly what `elapsed > live: return` below already does --
+## a first reading of `t_jhp4` alone (which only shows the one call) would
+## have said this was a single-frame check and made it too strict; reading
+## `t_punch_sleep` too is what settles it as the multi-frame window this
+## already is.
 func _resolve_hits(a: Fight, b: Fight) -> void:
 	if a.connected:
 		return
