@@ -604,6 +604,36 @@ const UPCUT_VX := int(2.0 * ONE)         ## measured, 0x20000
 const UPCUT_VY := -int(18.0 * ONE)       ## measured, 0xffee0000
 const UPCUT_G := 0x5800                  ## measured, 0.34375
 
+## **The corner-trap mercy rule.** `am_i_close_to_edge` (other.c 0x0005718c)
+## and `t_avoid_corner_trap` (mkreact.c 0x00047b50): while a fighter is
+## reacting to a hit (HIT or FALLING) and pinned within `CORNER_EDGE_DIST`
+## of the wall BEHIND him -- `gdfe4`'s two distances, `|x - ROUNDPARAM_LEFT|`
+## and `|ROUNDPARAM_RIGHT - x|`, picked by which side the opponent is on,
+## same as `is_he_right` -- once he has taken `CORNER_TRAP_HITS` hits since
+## his last return to normal, the OTHER fighter gets ejected instead of the
+## one in the corner: `xfer_otherguy` hands a thread over to run
+## `t_ken_masters_xfer` on the attacker.
+##
+## **CHOSEN: one threshold for every reaction, not the real per-move table.**
+## The binary sets this per calling reaction -- 0 (`t_cc_block_upcut`), 1
+## (`t_cc_block_avoid_corner`, `t_cc_ken_masters`/the uppercut chain,
+## `t_r_airborn_duck_kick`), 2 (`t_r_airpunch`), 3 (`t_r_duck_airpunch`) --
+## and this port's reaction table does not carry which specific `t_r_*`
+## produced a given react id, so it uses 1, the most common value, for all
+## of them. The BLOCKED-hit variants (which additionally save and restore
+## `p_hit` around the check, so blocking never permanently counts against
+## the trap) are not modeled either -- this only runs for HIT/FALLING.
+const CORNER_EDGE_DIST := 103            ## measured, 0x67, am_i_close_to_edge
+const CORNER_TRAP_HITS := 1              ## CHOSEN -- see the note above
+## `t_ken_masters_xfer`'s airborne branch (mkreact.c 0x00047634): 3.5 through
+## away_x_vel, then the same shape as every other knockdown here.
+const MERCY_VX := int(3.5 * ONE)         ## measured, 0x38000
+const MERCY_VY := -int(6.0 * ONE)        ## measured, 0x38000 - 0x98000
+## Grounded branch: away_x_vel(7.0), no state change. `field1c` holds 7.0
+## from the routine's own opening store, still unread by anything else when
+## this branch takes it.
+const MERCY_SHOVE_VX := int(7.0 * ONE)   ## measured, 0x70000
+
 ## **How fast each reaction throws the victim sideways**, from the leaf that
 ## arms its flight.
 ##
@@ -1210,6 +1240,10 @@ class Fight extends RefCounted:
 	var health := 100
 	var connected := false
 	var wins := 0
+	## `p_hit` (MK3OBJPROC 0x44 -- `inc_p_hit`/`zero_my_p_hit`): hits taken
+	## since this fighter last returned to normal. Feeds the corner-trap
+	## mercy rule; see `CORNER_TRAP_HITS`.
+	var p_hit := 0
 	var prev_buttons := 0
 	## Which of those bits went down this frame -- `swscan`'s press set.
 	var went := 0
@@ -1548,6 +1582,7 @@ func reset() -> void:
 		f.ani_count = 1
 		f.ani_index = 0
 		f.react = -1
+		f.p_hit = 0
 		f.collapsed = false
 		f.dying = false
 		f.ani_dir = 1
@@ -2168,6 +2203,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			if f.timer == 0:
 				f.st = St.STANCE
 				f.table = BT_STANCE
+				f.p_hit = 0     # zero_my_p_hit, back to normal
 			return
 		St.FALLING:
 			# **It ends when the CLIP does**, and that is the fix for a
@@ -2272,6 +2308,7 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.st = St.STANCE
 				f.table = BT_STANCE
 				f.react = -1
+				f.p_hit = 0     # zero_my_p_hit, back to normal
 			return
 		St.DEAD, St.VICTORY:
 			# The round is over. Neither of them does anything else.
@@ -2840,6 +2877,7 @@ const KNOCKS_DOWN_IF_AIRBORNE := [0, 1, 6, 9, 11, 76, 115]
 
 func _take_reaction(f: Fight, react: int, away := 1, airborne := false) -> void:
 	f.react = react
+	f.p_hit += 1        # inc_p_hit, run at the top of every reaction
 	if KNOCKS_DOWN_IF_AIRBORNE.has(react) and not airborne:
 		var grounded_ani := ANI_STUMBLE if react == 115 \
 			else int(REACT_ANI.get(react, ANI_HIT))
@@ -2884,6 +2922,56 @@ func _launch(f: Fight, away: int) -> void:
 		f.g = FALL_G
 		f.timer = _ani_length(clip, RATE_FALL)
 	f.timer_total = f.timer
+
+
+## `am_i_close_to_edge`, transcribed: distance from the wall BEHIND f, picked
+## by which side the opponent stands on -- the same `is_he_right` split. Not
+## WALL_L/WALL_R (those are gravity_n_bounds' padded clamp): `gdfe4` measures
+## against the bare camera bounds, ROUNDPARAM_LEFT/RIGHT.
+func _is_cornered(f: Fight, other: Fight) -> bool:
+	var back_dist: int
+	if other.xi() > f.xi():
+		back_dist = absi(f.xi() - ROUNDPARAM_LEFT)
+	else:
+		back_dist = absi(ROUNDPARAM_RIGHT - f.xi())
+	return back_dist <= CORNER_EDGE_DIST
+
+
+## `t_avoid_corner_trap` + `xfer_otherguy` + `t_ken_masters_xfer`: a fighter
+## pinned in the corner and hit enough times ejects the OTHER fighter instead
+## of getting anything done to himself. See `CORNER_EDGE_DIST`'s own note for
+## what is and is not modeled here.
+func _corner_trap_check() -> void:
+	for i in fighters.size():
+		var victim := fighters[i]
+		var attacker := fighters[1 - i]
+		if victim.st != St.HIT and victim.st != St.FALLING:
+			continue
+		if victim.p_hit < CORNER_TRAP_HITS:
+			continue
+		if not _is_cornered(victim, attacker):
+			continue
+		_corner_trap_eject(attacker, victim)
+
+
+func _corner_trap_eject(attacker: Fight, victim: Fight) -> void:
+	var away := 1 if attacker.xi() >= victim.xi() else -1
+	if attacker.yi() < _ground_y():
+		attacker.st = St.FALLING
+		attacker.table = BT_NULL
+		attacker.react = -1
+		attacker.ani_rate = RATE_FALL
+		attacker.vx = MERCY_VX * away
+		attacker.vy = MERCY_VY
+		attacker.g = FALL_G
+		attacker.timer = _ani_length(ANI_KNOCKDOWN, RATE_FALL)
+		attacker.timer_total = attacker.timer
+		attacker.airborne_launch = true
+	else:
+		# Grounded branch: `away_x_vel(7.0)` and ten frames of `move_slave_too`
+		# walking him back, not modeled -- the instant shove is this port's
+		# stand-in for that walk.
+		attacker.vx = MERCY_SHOVE_VX * away
 
 
 ## `t_collapse_on_ground`, transcribed.
@@ -3281,6 +3369,7 @@ func tick() -> void:
 	# **First, before gravity and before the walls** -- which is where
 	# `DisplayUpdate` calls it.
 	_repell()
+	_corner_trap_check()
 
 	for f in fighters:
 		# **gravity_n_bounds, transcribed**: gravity adds into vy, and x is
