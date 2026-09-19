@@ -352,6 +352,14 @@ func _ensure_fight() -> void:
 	if _fight != null:
 		_fight.enabled = _fight_mode
 		_fight.visible = _fight_mode
+		# **Picking FIGHT again reuses this same instance** (see the comment
+		# on this function), and reusing it silently carried the previous
+		# match's win count and match_over flag into the new one. A real
+		# fight starting fresh has to actually be fresh; a stage-viewer
+		# pass, which never plays a match to begin with, has nothing to
+		# reset.
+		if _fight_mode:
+			_fight.new_match()
 		return
 	if _audio == null:
 		_audio = _Audio.new(_menu.res_dir)

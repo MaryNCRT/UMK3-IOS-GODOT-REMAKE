@@ -1496,6 +1496,27 @@ func reset() -> void:
 		hud.reset()
 
 
+## Everything `reset()` deliberately leaves alone, because `reset()` is also
+## how the SAME match's next round starts and a round has to keep the score
+## it is fought for. Call this instead when a genuinely new match begins.
+##
+## **This is the fix for "the win count carried into the next fight."**
+## `umk3_main.gd`'s `_ensure_fight` keeps one `Fight` instance alive across
+## trips back to the stage list -- skinning Scorpion again costs a second,
+## so the comment there says "kept, not freed" on purpose -- but nothing
+## ever cleared `wins`, `round_num`, `match_over` or `banner` on the way
+## back in. Picking FIGHT again after a match ended could start the new one
+## already at 1-0, or land straight on "WINS THE MATCH" from the fight
+## before, depending on how the last one ended.
+func new_match() -> void:
+	for f in fighters:
+		f.wins = 0
+	round_num = 1
+	match_over = false
+	banner = ""
+	reset()
+
+
 # --------------------------------------------------------------------- input
 ## One player's ten-bit word.
 ##
