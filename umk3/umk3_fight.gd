@@ -2483,7 +2483,7 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 	# him and stops him dead before the reaction's own velocity is applied.
 	b.facing = 1 if a.xi() >= b.xi() else -1
 	b.vx = 0
-	_take_reaction(b, int(stk[_Stk.REACT]), away)
+	_take_reaction(b, int(stk[_Stk.REACT]), away, b.yi() < _ground_y())
 	b.table = BT_NULL                        # how the engine takes input away
 	# **The reaction's own velocity, out of the reaction it names.** The strike
 	# record's fifth word carries the index into `_reaction_table`, and the
@@ -2565,8 +2565,30 @@ func _is_he_blocking(b: Fight, stk: Array) -> bool:
 ## **Which animation** is REACT_ANI, and **whether it is a knockdown** is
 ## KNOCKS_DOWN -- both by the reaction id out of the strike record, the same
 ## number that already chooses the knockback and the sound.
-func _take_reaction(f: Fight, react: int, away := 1) -> void:
+##
+## **React 115 (`t_r_scorp_tele`) is not one reaction, it is two, and which
+## one runs depends on whether the VICTIM was airborne at the moment of the
+## hit.** `t_r_scorp_tele` pushes `t_reaction_start` -> `t_rst5`, and `t_rst5`
+## (mkreact.c 0x11217, read this session) branches there:
+##
+##     airborne  -> installs obj->field30 (t_generic_airborn_hit): a real
+##                  knockdown, KNOCKS_DOWN's existing entry
+##     grounded  -> field34 == 0, so it pops straight back to
+##                  t_r_scorp_tele's own token 0x31e: shake_a11, group_sound,
+##                  install t_stumble_back -> t_stumble_back_vel, animation
+##                  32 (ANI_STUMBLE) -- NOT a knockdown at all
+##
+## A grounded opponent is the common case (nothing in this port yet launches
+## Scorpion's teleport punch specifically at an airborne target), and until
+## this was traced every teleport-punch hit knocked down regardless -- wrong
+## for the case that actually happens.
+func _take_reaction(f: Fight, react: int, away := 1, airborne := false) -> void:
 	f.react = react
+	if react == 115 and not airborne:
+		f.st = St.HIT
+		f.timer = _ani_length(ANI_STUMBLE, maxi(1, RATE_STANCE + rate_bias))
+		f.timer_total = f.timer
+		return
 	var ani: int = int(REACT_ANI.get(react, ANI_HIT))
 	if f.table == BT_DUCK and not KNOCKS_DOWN.has(react):
 		ani = ANI_DUCK_HIT
