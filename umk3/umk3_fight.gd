@@ -424,10 +424,17 @@ const REACT_ANI := {
 }
 
 ## **Which reactions put a fighter on the floor.** The uppercut, the
-## roundhouse, the sweep and the slide -- the four that in Mortal Kombat end
-## with you getting up again, and the four whose reactions above are a
-## knockdown or a fall rather than a flinch.
-const KNOCKS_DOWN := [4, 8, 12, 45, 115]
+## roundhouse, the sweep, the slide and the flip kick -- the ones that in
+## Mortal Kombat end with you getting up again, and whose reactions above
+## are a knockdown or a fall rather than a flinch.
+##
+## **10 (`t_r_flip_kick`) knocks down unconditionally, checked this
+## session.** Its grounded continuation is `t_onback3`, which sets
+## `field40 = 0x1e` -- animation 30, the same SCKNOCKDOWN `t_reaction_land`
+## itself uses -- so unlike the reactions in KNOCKS_DOWN_IF_AIRBORNE below,
+## there is no non-knockdown branch here to gate on. It was wrongly treated
+## as never knocking down before this was traced.
+const KNOCKS_DOWN := [4, 8, 10, 12, 45, 115]
 
 ## **Most reactions inherit their rate; `t_r_hi_kick` does not, and this is
 ## the one case read so far.** `t_r_hi_kick` (0x00045410) plays SCHIHIT the
@@ -2668,27 +2675,42 @@ func _is_he_blocking(b: Fight, stk: Array) -> bool:
 ## KNOCKS_DOWN -- both by the reaction id out of the strike record, the same
 ## number that already chooses the knockback and the sound.
 ##
-## **React 115 (`t_r_scorp_tele`) is not one reaction, it is two, and which
-## one runs depends on whether the VICTIM was airborne at the moment of the
-## hit.** `t_r_scorp_tele` pushes `t_reaction_start` -> `t_rst5`, and `t_rst5`
-## (mkreact.c 0x11217, read this session) branches there:
+## **Several reactions are not one reaction, they are two, and which one
+## runs depends on whether the VICTIM was airborne at the moment of the
+## hit.** Found first in `t_r_scorp_tele` (react 115): it pushes
+## `t_reaction_start` -> `t_rst5`, and `t_rst5` (mkreact.c 0x11217) branches
+## there --
 ##
 ##     airborne  -> installs obj->field30 (t_generic_airborn_hit): a real
-##                  knockdown, KNOCKS_DOWN's existing entry
-##     grounded  -> field34 == 0, so it pops straight back to
-##                  t_r_scorp_tele's own token 0x31e: shake_a11, group_sound,
-##                  install t_stumble_back -> t_stumble_back_vel, animation
-##                  32 (ANI_STUMBLE) -- NOT a knockdown at all
+##                  knockdown
+##     grounded  -> pops back to the reaction's OWN grounded continuation:
+##                  a plain hit-stun, not a knockdown at all
 ##
-## A grounded opponent is the common case (nothing in this port yet launches
-## Scorpion's teleport punch specifically at an airborne target), and until
-## this was traced every teleport-punch hit knocked down regardless -- wrong
-## for the case that actually happens.
+## -- and the same shape (field30 = t_generic_airborn_hit before pushing
+## t_reaction_start, an away_x_vel + a plain animation when grounded) turned
+## up in five more of Scorpion's reachable reactions once the rest of
+## mkreact.c's t_r_* functions were read the same way: 0 (t_r_hi_kick), 1
+## (t_r_lo_kick), 6 (t_r_duck_kickh), 9 (t_r_elbow_knee, via t_rek3) and 11
+## (t_r_flip_punch). For all of those the grounded clip is exactly what
+## REACT_ANI already names -- ANI_HIT, ANI_LO_HIT, and so on were already
+## right for the common (grounded) case, just missing the airborne
+## knockdown. 115 is the one exception: its grounded clip is
+## `t_stumble_back`'s ANI_STUMBLE, not anything REACT_ANI holds for it
+## (REACT_ANI[115] is ANI_KNOCKDOWN, which only applies airborne).
+##
+## Grounded is the common case for all six -- nothing in this port launches
+## these at an airborne target specifically -- and every one of them knocked
+## down unconditionally (115) or never (the other five) before this was
+## traced.
+const KNOCKS_DOWN_IF_AIRBORNE := [0, 1, 6, 9, 11, 115]
+
 func _take_reaction(f: Fight, react: int, away := 1, airborne := false) -> void:
 	f.react = react
-	if react == 115 and not airborne:
+	if KNOCKS_DOWN_IF_AIRBORNE.has(react) and not airborne:
+		var grounded_ani := ANI_STUMBLE if react == 115 \
+			else int(REACT_ANI.get(react, ANI_HIT))
 		f.st = St.HIT
-		f.timer = _ani_length(ANI_STUMBLE, maxi(1, RATE_STANCE + rate_bias))
+		f.timer = _ani_length(grounded_ani, maxi(1, RATE_STANCE + rate_bias))
 		f.timer_total = f.timer
 		return
 	var ani: int = int(REACT_ANI.get(react, ANI_HIT))
