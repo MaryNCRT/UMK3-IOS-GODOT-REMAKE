@@ -3658,7 +3658,19 @@ func _ani_for(f: Fight) -> Array:
 		St.HIT:
 			if f.react >= 0 and REACT_ANI.has(f.react) 					and f.table != BT_DUCK:
 				return [int(REACT_ANI[f.react]), int(REACT_RATE.get(f.react, -1))]
-			return [ANI_DUCK_HIT if f.table == BT_DUCK else ANI_HIT, -1]
+			if f.table == BT_DUCK:
+				# **The rate is measured; which of the two clips plays is
+				# still CHOSEN.** t_r_duck_punch/kickh/kickl (react 5/6/7)
+				# all set `field40 = 0x3001d` or `0x30007` -- rate 3 either
+				# way -- and pick the LOW half (animation 29 vs 7/ANI_DUCK_HIT)
+				# by `get_my_height`, a LIVE measurement of the victim's
+				# current bounding part against G[0xac] - 0x80, not a fixed
+				# per-character classification. Modelling that needs the
+				# same coordinate space DUCK_BOX is already in, worked out
+				# against G[0xac]; not done yet, so this always takes the
+				# animation-7 branch regardless. The rate is real either way.
+				return [ANI_DUCK_HIT, 3]
+			return [ANI_HIT, -1]
 		St.FALLING:
 			return [ANI_SWEEPFALL if f.react == 4 else ANI_KNOCKDOWN, -1]
 		St.DOWN, St.DEAD:
