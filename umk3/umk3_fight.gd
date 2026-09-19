@@ -2749,6 +2749,24 @@ func _resolve_hits(a: Fight, b: Fight) -> void:
 		# **`t_attk2`'s own window**: live from the first frame of the move for
 		# `pl->0x44` game frames, one check a frame. Not a fraction of the clip
 		# any more -- see STRIKE_LIVE.
+		#
+		# **This claim needs redoing, the same way the punches' did.** Read
+		# `t_attk2` (other.c 0x000594d4) whole while tracing the punch fix:
+		# token 0 pushes `t_act_mframew` FIRST -- same as `t_jhp4`/`t_jmp4` --
+		# and only calls `strike_check_a0` for the first time once that
+		# unwinds. `t_kick2` sets `obj->a10 = 6` (other.c/mkstat.c) BEFORE
+		# installing `t_striker`'s chain that reaches `t_attk2`, and it is a
+		# raw tick count with no rate scaling in the binary, exactly like the
+		# punches' `a10 = 5`. So both halves of the punch bug are also real
+		# here: the window opens too early AND `* rate` below makes it too
+		# long. NOT fixed in this pass -- unlike the punches, kicks have no
+		# PUNCH_EXTEND-equivalent measured yet (their swing isn't split into
+		# named sub-parts the way H1/L1 are), so removing `* rate` alone
+		# without ALSO moving the open point would shrink the window without
+		# opening it later, which could make a kick whiff every time instead
+		# of connecting early. Needs each strike's own extend-clip length
+		# measured (one at a time: HIKICK/LOKICK/UPPERCUT/ROUNDH/KNEE/ELBOW/
+		# SWEEP/the duck kicks) before touching this safely.
 		var sid0 := _strike_now(a, b)
 		var rate := maxi(1, _strike_rate(sid0, a))
 		var live: int = int(STRIKE_LIVE.get(sid0, 3)) * rate
