@@ -3103,13 +3103,18 @@ func _step_spear(f: Fight, other: Fight) -> void:
 ## with the real silhouette and this one did not.
 ##
 ## Reading both fighters' own `_body_box` and testing the two directions
-## separately, exactly as the binary does, fixes that without needing the
-## one piece still missing: `Pp + 0x40`, a per-fighter height threshold with
-## no writer anyone has found, which the binary consults only in the two
-## NON-overlapping cases to choose between a full pass-through ("setup")
-## and velocity arbitration. Non-overlapping still takes the leash-only
-## path here, same simplification as before -- only the overlap TEST
-## itself changed.
+## separately, exactly as the binary does, fixes that without needing
+## `Pp + 0x40` -- a per-fighter height threshold the binary consults only
+## in the two NON-overlapping cases to choose between a full pass-through
+## ("setup") and velocity arbitration. **No longer an open question:** every
+## one of the binary's 4,342 functions was disassembled looking for a
+## writer to it, and there is none, anywhere. Left at static zero, `y1 < 0`
+## on a signed halfword is false for any ordinary y, so the "setup" branch
+## it guards is dead in practice -- ordinary play never takes it. That is
+## why non-overlapping can just take the leash-only path here, same
+## simplification as before: it is not a simplification of a live
+## mechanism, it is the mechanism, minus a branch the retail game itself
+## never reaches either. See `mkrepell.c`'s own comment for the scan.
 const REPELL_FUDGE := 0x30               ## measured, repell_func's own -0x30
 func _repell() -> void:
 	var a := fighters[0]
