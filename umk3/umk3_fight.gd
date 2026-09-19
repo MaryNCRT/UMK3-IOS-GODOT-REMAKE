@@ -2036,6 +2036,27 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 			# point in the clip is not pinned down yet, so this uses "the
 			# last fifth of the clip" as the SHAPE of that gate -- early
 			# cancel, late commit -- without claiming its exact frame.
+			#
+			# **CLOSED, not skipped: `t_check_stay_down` / `t_check_winner_status`
+			# need no code here.** Before any of the above, `gup2` pushes through
+			# both of those first (mkreact.c's own banner, tokens 0x14d9/0x14da).
+			# Traced them: `t_check_winner_status` reads the round-status word
+			# `G[0x45c]` (0 running, 1/2 a player won, 3 finish-him pending) and
+			# `t_check_stay_down` reads the SAME word one level up -- if THIS
+			# fighter is not the winner named there, it erases the getup thread
+			# and installs `t_wait_forever` instead of ever reaching the animated
+			# part below: **the loser of the round never actually gets up.**
+			#
+			# This port decides that at the KNOCKDOWN HIT itself instead of by
+			# polling here every frame: `_resolve_hits` collapses a fighter
+			# straight to St.DEAD the instant `health <= 0` (see `_collapse`),
+			# before St.DOWN/St.GETUP are ever entered, and the winner is never
+			# in a DOWN/GETUP cycle to begin with since the hit that ends the
+			# round is what put them there. Same outcome -- the loser never
+			# stands back up -- decided once at the hit instead of every getup
+			# frame, and no fatality/animality "explicit stay-down" bit
+			# (`proc->0x10 & 0x40`) is reachable yet since none of those are
+			# wired up in this port.
 			f.vx = 0
 			if f.timer > f.timer_total / 5 and (raw & IN_DOWN):
 				f.st = St.DUCK
