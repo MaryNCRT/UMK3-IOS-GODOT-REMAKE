@@ -93,6 +93,21 @@ var banner := ""
 var names := ["SCORPION", "SCORPION"]
 var shown := [100.0, 100.0]
 
+## **The combo report.** `back_to_normal_px` (other.c) fires this at the
+## instant a hit string ends -- `p_hit > 1`, so a string and not one blow --
+## with a hit count and `field54 * 100 / 166`, a percentage of a life bar.
+## No sprite for this either (see `_banner`'s own note): a plain text
+## readout near the fighter who landed it, held for COMBO_HOLD ticks.
+## `combo_serial` is how the fight tells "a new combo landed" from "still
+## showing the last one" -- 0 is a valid hit/pct pair, so the count alone
+## can't carry that signal.
+const COMBO_HOLD := 90
+var combo_serial := [0, 0]
+var combo_hits := [0, 0]
+var combo_pct := [0, 0]
+var _combo_seen := [0, 0]
+var _combo_timer := [0, 0]
+
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -122,11 +137,18 @@ func tick() -> void:
 			shown[i] = maxf(want, shown[i] - DRAIN)
 		elif shown[i] < want:
 			shown[i] = minf(want, shown[i] + DRAIN)
+		if combo_serial[i] != _combo_seen[i]:
+			_combo_seen[i] = combo_serial[i]
+			_combo_timer[i] = COMBO_HOLD
+		elif _combo_timer[i] > 0:
+			_combo_timer[i] -= 1
 	queue_redraw()
 
 
 func reset() -> void:
 	shown = [100.0, 100.0]
+	_combo_seen = [0, 0]
+	_combo_timer = [0, 0]
 
 
 func _draw() -> void:
@@ -153,7 +175,25 @@ func _draw() -> void:
 		_name(names[i], bar, mirrored, s)
 		_run(under, clampf(float(run[i]) / 100.0, 0.0, 1.0), mirrored)
 		_wins(under, wins[i], mirrored, s)
+		_combo(under, i, mirrored, s)
 	_banner(vp, s)
+
+
+## The combo report, held for a few seconds under the bar of whoever landed
+## it. No asset for it (see `_banner`'s own note); a plain outlined string.
+func _combo(under: Rect2, i: int, mirrored: bool, s: float) -> void:
+	if _combo_timer[i] <= 0:
+		return
+	var text := "%d HITS  %d%%" % [combo_hits[i], combo_pct[i]]
+	var font := ThemeDB.fallback_font
+	var size := int(maxf(12.0, 16.0 * s))
+	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	var x := under.position.x if not mirrored else under.position.x + under.size.x - w
+	var pos := Vector2(x, under.position.y + under.size.y + size)
+	draw_string_outline(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size,
+		4, Color(0, 0, 0, 0.9))
+	draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size,
+		Color(1.0, 0.55, 0.15))
 
 
 ## The centred round/match text -- "ROUND N", "FIGHT!", "PLAYER N WINS".

@@ -1275,9 +1275,12 @@ class Fight extends RefCounted:
 	var combo_dmg := 0
 	## The last finished combo, reported the instant `back_to_normal_px`
 	## would fire (`p_hit > 1` -- a string, not one blow) and held until the
-	## next one. Nothing reads these yet; they exist so a HUD/announcer can.
+	## next one. `combo_serial` bumps every time these change, since 0 is a
+	## valid starting value and the HUD needs to tell "still the old combo"
+	## from "a new one landed at the same numbers".
 	var last_combo_hits := 0
 	var last_combo_pct := 0
+	var combo_serial := 0
 	var prev_buttons := 0
 	## Which of those bits went down this frame -- `swscan`'s press set.
 	var went := 0
@@ -1619,6 +1622,7 @@ func reset() -> void:
 		f.p_hit = 0
 		f.combo_dmg = 0
 		f.last_combo_hits = 0
+		f.combo_serial = 0
 		f.last_combo_pct = 0
 		f.collapsed = false
 		f.dying = false
@@ -2993,6 +2997,7 @@ func _back_to_normal(f: Fight) -> void:
 	if f.p_hit > 1:
 		f.last_combo_hits = f.p_hit
 		f.last_combo_pct = f.combo_dmg
+		f.combo_serial += 1
 	f.p_hit = 0
 	f.combo_dmg = 0
 
@@ -3481,6 +3486,9 @@ func tick() -> void:
 		hud.run = [fighters[0].turbo * 100 / RUN_MAX,
 			fighters[1].turbo * 100 / RUN_MAX]
 		hud.banner = banner
+		hud.combo_serial = [fighters[0].combo_serial, fighters[1].combo_serial]
+		hud.combo_hits = [fighters[0].last_combo_hits, fighters[1].last_combo_hits]
+		hud.combo_pct = [fighters[0].last_combo_pct, fighters[1].last_combo_pct]
 		hud.tick()
 	_resolve_hits(fighters[0], fighters[1])
 	_resolve_hits(fighters[1], fighters[0])
