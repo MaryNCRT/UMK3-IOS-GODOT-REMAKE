@@ -32,11 +32,22 @@
 ##
 ## ## What is NOT here
 ##
-## The engine matches these through `seq_lookup`, 7,608 bytes of playback.c that
-## nobody has decompiled, and bit 10 of the input word is the request that
-## reaches it. This is a detector written from the notation, not that function:
-## the SEQUENCES are the game's and the matching rule is mine. A real
-## `seq_lookup` would also settle the timing window, which here is a choice.
+## **`seq_lookup` is decompiled (all of playback.c is), and it settles this
+## rather than leaving it open.** Bit 10 of the input word is not a motion a
+## player made -- `TranslateJoybits` (mk3.c) says it is set from OUTSIDE the
+## fight entirely, by whatever fills `joy[]` before `mk3_update` sees it,
+## which on iOS is the touch UI's own special-move button. `seq_lookup` and
+## `Playback_Update` (playback.c) just turn that request into a synthesised
+## joystick word, gated on `RoundParam[0x34]`. There never was a "back back
+## low punch" recogniser to be faithful to; the binary does not run one.
+##
+## So this detector, built from the notation table rather than from
+## `seq_lookup`, is not standing in for a gap -- it is the right thing for a
+## joystick or a pad, which is what this port targets. The SEQUENCES are the
+## game's own data; the matching rule and the timing window (WINDOW below)
+## are this port's, same as they would have to be even with `seq_lookup`
+## fully read, since that function answers a different question (what
+## button the touch UI meant) than the one a pad's motion input asks.
 ##
 ## ## No game data ships here
 class_name UMK3Moves
@@ -82,9 +93,12 @@ const SPECIALS := [
 
 ## How many game frames a notation may take end to end.
 ##
-## **A choice.** `seq_lookup` owns the real window and is not decompiled. Half a
-## second is the usual feel for this era; the buffer is cleared on a hit or a
-## state change, which matters more than the exact number.
+## **A choice, and there is nothing decompiled left to defer it to.**
+## `seq_lookup` is read now and it does not own a timing window at all -- it
+## answers "what does touch-UI request N mean," not "how fast must this
+## motion be." Half a second is the usual feel for this era; the buffer is
+## cleared on a hit or a state change, which matters more than the exact
+## number.
 const WINDOW := 30
 
 

@@ -1101,7 +1101,7 @@ const GROUND_OFFSET := [
 ## reaction is over when its animation is.
 enum St { STANCE, WALK_F, WALK_B, DUCK, BLOCK, JUMP, ATTACK, HIT, SPECIAL,
 	SPEARED, THROWN, FALLING, DOWN, GETUP, DEAD, VICTORY, STUNNED, UNBLOCK,
-	RUN }
+	RUN, TURN }
 
 ## The keyboard, the same map the C build uses: player one is the left hand
 ## plus U I O J K L, player two is the arrows and the numeric keypad.
@@ -1905,10 +1905,19 @@ func _ground_after_air_strike(f: Fight) -> void:
 
 ## The special the fighter just asked for, or an empty dictionary.
 ##
-## **Bit 10 of the input word is the engine's own "a special was requested"**
-## and it goes to `seq_lookup` -- 7,608 bytes of playback.c nobody has
-## decompiled. This answers the same question from the notation tables instead;
-## umk3_moves.gd says which half is the game's and which is mine.
+## **Bit 10 is not a motion detector -- `TranslateJoybits` (mk3.c 0x00031a64,
+## decompiled and read in full this session) settles what it actually is.**
+## It is set from OUTSIDE the fight entirely, by whatever fills `joy[]`
+## before `mk3_update` ever sees it -- the iOS touch UI's own special-move
+## button, not a recognised stick motion. `seq_lookup`/`Playback` (all of
+## playback.c, also decompiled) is what turns that request into a
+## synthesised joystick word, gated on `RoundParam[0x34]`.
+##
+## So there is no decompiled "back back low punch" detector to be faithful
+## to -- the binary never runs one. This answers the same question from the
+## notation tables instead, which is the right call for a pad, not a
+## fallback for a gap; umk3_moves.gd says which half is the game's data and
+## which is this port's own matching rule.
 func _special_asked(f: Fight, raw: int, airborne: bool) -> Dictionary:
 	f.buf.tick()
 	for sym in _Moves.events(raw, f.raw_prev, f.facing):
@@ -1920,11 +1929,26 @@ func _special_asked(f: Fight, raw: int, airborne: bool) -> Dictionary:
 func _think(f: Fight, other: Fight, raw: int) -> void:
 	var airborne := f.yi() < _ground_y()
 
-	# Face the opponent whenever both feet are down. The engine does this in
-	# t_walk_flip_check, which is not decompiled; this is the obvious rule and
-	# is a stand-in.
-	if not airborne and f.st != St.ATTACK and f.st != St.HIT 			and f.st != St.SPEARED:
-		f.facing = 1 if other.xi() >= f.xi() else -1
+	# `t_walk_flip_check` (0x0002fb88, joy.c), transcribed: `am_i_facing_him`
+	# decides, and if the answer is no it does not just flip the fact -- it
+	# replaces the current frame with `t_turn_around` (other.c 0x0005825c),
+	# which zeroes velocity, DISABLES BUTTONS, and plays a real clip
+	# (`field40 = 3` -> `ANI_TURN`, at `field1c = 2`, the engine's own
+	# animation-rate slot) until that clip runs out on its own, then unwinds
+	# back to whatever was running. Snapping `facing` on the same tick the
+	# opponent crosses -- which is what this used to do, with a comment
+	# calling it "the obvious rule, a stand-in" -- skips the part where the
+	# fighter is briefly not under control and not moving while it plays.
+	if not airborne and f.st != St.ATTACK and f.st != St.HIT \
+			and f.st != St.SPEARED and f.st != St.TURN:
+		var want_facing := 1 if other.xi() >= f.xi() else -1
+		if want_facing != f.facing:
+			f.facing = want_facing
+			f.st = St.TURN
+			f.table = BT_NULL
+			f.vx = 0
+			f.timer = _ani_length(ANI_TURN, 2)
+			f.timer_total = f.timer
 
 	var dir_f := IN_RIGHT if f.facing > 0 else IN_LEFT
 	var dir_b := IN_LEFT if f.facing > 0 else IN_RIGHT
@@ -1992,6 +2016,12 @@ func _think(f: Fight, other: Fight, raw: int) -> void:
 				f.st = St.STANCE
 				f.table = BT_STANCE
 				f.ani_dir = 1
+			return
+		St.TURN:
+			f.vx = 0
+			if f.timer == 0:
+				f.st = St.STANCE
+				f.table = BT_STANCE
 			return
 		St.HIT:
 			if f.timer == 0:
@@ -3159,6 +3189,12 @@ func _ani_for(f: Fight) -> Array:
 			return [ANI_WALK_F, WALK_FORWARD[CHARACTER][WALK_RATE]]
 		St.WALK_B:
 			return [ANI_WALK_B, WALK_BACKWARD[CHARACTER][WALK_RATE]]
+		St.TURN:
+			# `t_turn_around` sets `field1c = 2` before pushing `t_mframew`,
+			# which is the engine's own "wait this animation's rate" slot --
+			# not a guess, the same field other reactions' own rates come
+			# from (see REACT_RATE's banner).
+			return [ANI_TURN, 2]
 	if f.health == 0:
 		return [ANI_VICTORY, -1]
 	# Standing is the one that sets it, and everything else lives off that.
