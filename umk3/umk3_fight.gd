@@ -3662,7 +3662,14 @@ func _ani_for(f: Fight) -> Array:
 			# all; the engine walks this one backwards.
 			return [ANI_DUCK_BLOCK if f.blk_duck else ANI_BLOCK, -1]
 		St.DUCK:
-			return [ANI_DUCK, -1]
+			# **Does not inherit either.** `t_do_duck` (other.c 0x00055c38)
+			# sets `field1c = 2` before pushing `t_act_mframew` to play
+			# SCDUCK (animation 4) down -- the same explicit-rate idiom
+			# `t_do_jump_up`/the reactions use, verified while going through
+			# UP/DOWN one at a time. `-1` here meant the descent played at
+			# whatever rate the fighter already had (6 from stance, 5 from
+			# a walk) instead of its own, faster 2.
+			return [ANI_DUCK, 2]
 		St.JUMP:
 			# **Neither jump inherits its rate -- both were, and both are
 			# wrong for it.** `t_do_jump_up` (other.c 0x000580e8) sets
