@@ -543,21 +543,22 @@ const DEAD_ADJUST := [
 ]
 const COLLAPSE_HOLD := 0x12              ## measured, obj->0x64
 
-## **Re-checked with the right stride, and 4 holds up -- with a loose end.**
-## `_getup_speeds` (0x001671a4), read as 8-byte {rate, speed} pairs the way
-## `_walk_forward_info` packs its own table: the first SIX characters all
-## read `0x00040004` -- rate 4, speed 4 -- exactly what this constant already
-## says. Reading it as 4-byte entries first (no speed half) instead of 8
-## made Scorpion's own slot look like noise; it was the wrong stride, not a
-## wrong value here.
-##
+## **Settled: rate 4 for every character, Scorpion included.** `_getup_speeds`
+## (0x001671a4) is 4-byte entries, ONE packed word per character -- `(rate
+## << 16) | speed`, not the 8-byte {rate, speed} pair a previous pass read it
+## as. That earlier stride made every ODD-indexed word look like the next
+## character's own "speed" half, and past the sixth character the pairs it
+## produced stopped looking like small rates at all -- which is exactly what
+## reading two real characters' worth of data as one garbled entry would do.
+## Read fresh with the right stride, all 26 slots (0-25) have `rate = 4` in
+## the high half unconditionally; only the LOW half (`speed`) varies, and
+## only from slot 13 on -- slots 0-12 are `0x00040004` outright. Scorpion is
+## slot 18 (`0x00041d41`): rate 4, same as everyone, speed 7,489, which is
+## in the varying part but does not touch the rate this constant is for.
 ## `gup2` (mkreact.c) only stores the table's ADDRESS into `obj->field48`;
-## nothing decompiled yet reads it back indexed by character, so it is not
-## confirmed that character number indexes this table directly rather than
-## through some other lookup -- past the sixth entry the numbers stop
-## looking like small rates at all, which is the open end. Scorpion is
-## character 18, past where the pattern holds. Worth another pass once
-## whatever reads `field48` back is decompiled.
+## nothing decompiled reads the speed half back, so it stays unused here,
+## same as before -- only the open question about the RATE is what this
+## closes.
 const RATE_GETUP := 4
 
 ## **The fall, from `t_fall_on_my_back` (0x00041efc).** Four stores and a
