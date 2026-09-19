@@ -1085,12 +1085,29 @@ const STRIKE_LIVE := {
 ## `t_kick2` (0x0004c9e4) sets `pl->0x1c = 3` immediately before handing to
 ## `t_retract_strike_act`, so a kick swings at 1 and comes back at 3 -- it
 ## snaps out and returns slowly, which is what a kick looks like.
-## `t_stat_do_uppercut` sets 4 at the same moment. Everything else reaches the
-## retraction through `t_retract_strike` (0x0004cb48), which sets the tag to
-## zero and touches nothing else, so those come back at whatever they went out
-## at.
+## `t_stat_do_uppercut` sets 4 at the same moment.
+##
+## **"Everything else reads 0 here by omission" was wrong -- it was only ever
+## checked for two of the seven strikes that go through `t_striker`.** Traced
+## the rest while chasing a "the hits go too fast" report and every one of
+## them turned out to set its OWN retract rate the same way, each explicitly,
+## right before installing the retract handler:
+##
+##     t_do_knee (mkcombo.c)         field1c = 6   before t_retract_strike
+##     t_do_elbow (mkcombo.c)        field1c = 3   before t_retract_strike_act
+##     t_stat_do_roundhouse          field1c = 4   before t_retract_strike
+##     t_stat_do_sweep_kick          field1c = 5 (miss) / 6 (hit),
+##                                   before t_retract_strike_act
+##
+## All four were retracting at their own SWING rate instead (1, 1, 3, 3) --
+## knee and elbow in particular came back three to six times faster than the
+## real game, which is exactly the kind of thing "the hits go too fast" is
+## made of. Sweep's hit/miss difference is one frame at rate 5 vs 6; using
+## the miss value (5) here since that is the plain, unconditional case and
+## the gap is a single tick either way.
 const STRIKE_RETRACT := {
 	_Stk.HIKICK: 3, _Stk.LOKICK: 3, _Stk.UPPERCUT: 4,
+	_Stk.KNEE: 6, _Stk.ELBOW: 3, _Stk.ROUNDH: 4, _Stk.SWEEP: 5,
 }
 
 ## **Removed -- `HI_PUNCH: 19` had no citation and the traced chain has no
